@@ -1,0 +1,19 @@
+# Copy this file to ~/.config/fluxgrove/config.toml and adjust the values.
+
+url = "https://reader.example.com"
+token = "your-api-token"
+
+# Optional settings.
+theme = "catppuccin-mocha"
+limit = 100
+mark_read = true
+
+# Start with feeds that have no unread items hidden in the Feeds panel.
+hide_read_feeds = false
+
+# Start with read articles hidden in the Entries panel.
+hide_read_entries = false
+
+# Instead of a token you can use username/password authentication:
+# username = "demo"
+# password = "secret"
