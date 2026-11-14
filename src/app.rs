@@ -497,7 +497,7 @@ impl App {
                 Focus::Article => {}
             },
             KeyCode::Char('m') => self.toggle_read(),
-            KeyCode::Char('M') => self.mark_current_feed_read(),
+            KeyCode::Char('M') => self.mark_view_read(),
             KeyCode::Char('s') => self.toggle_star(),
             KeyCode::Char('J') if self.focus == Focus::Article => {
                 self.open_relative_article(1);
@@ -1265,34 +1265,54 @@ impl App {
         self.dirty = true;
     }
 
-    fn mark_current_feed_read(&mut self) {
-        let feed_id = match self.selection {
-            Selection::Feed(id) => Some(id),
-            _ if self.focus != Focus::Feeds => {
-                self.selected_entry().map(|entry| entry.feed_id)
+    /// The API scope that covers every entry in the current view.
+    ///
+    /// Searches and the starred view exist only on the client, so those mark
+    /// exactly the loaded results; every other view maps onto a server-side
+    /// scope, including entries beyond the fetch limit.
+    fn view_scope(&self) -> Result<(MarkAllScope, String), &'static str> {
+        let loaded_only = !self.search.is_empty()
+            || matches!(self.selection, Selection::Starred);
+        if loaded_only {
+            let ids: Vec<EntryID> =
+                self.entries.iter().map(|entry| entry.id).collect();
+            if ids.is_empty() {
+                return Err("No loaded entries to mark");
             }
-            _ => None,
+            let description = if self.search.is_empty() {
+                format!("the {} loaded starred entries", ids.len())
+            } else {
+                format!("the {} loaded search results", ids.len())
+            };
+            return Ok((MarkAllScope::Entries(ids), description));
+        }
+
+        let scope = match &self.selection {
+            Selection::All | Selection::Unread => {
+                let id = self.user_id.ok_or("Still connecting to Miniflux")?;
+                MarkAllScope::User(id)
+            }
+            Selection::Category(id) => MarkAllScope::Category(*id),
+            Selection::Feed(id) => MarkAllScope::Feed(*id),
+            Selection::Starred => unreachable!(),
         };
+        Ok((
+            scope,
+            format!("all entries in “{}”", self.selection_label()),
+        ))
+    }
 
-        let Some(feed_id) = feed_id else {
-            self.set_status(StatusKind::Info, "No feed selected");
-            return;
-        };
-
-        let feed_name = self
-            .feeds
-            .iter()
-            .find(|feed| feed.id == feed_id)
-            .map(|feed| feed.title.clone())
-            .unwrap_or_else(|| format!("feed {feed_id}"));
-
-        self.set_status(
-            StatusKind::Info,
-            format!("Marking “{feed_name}” as read…"),
-        );
-        self.send(ApiCommand::MarkAllRead {
-            scope: MarkAllScope::Feed(feed_id),
-        });
+    fn mark_view_read(&mut self) {
+        match self.view_scope() {
+            Ok((scope, description)) => {
+                self.set_status(
+                    StatusKind::Info,
+                    format!("Marking {description} as read…"),
+                );
+                self.send(ApiCommand::MarkAllRead { scope });
+            }
+            Err(reason) => self.set_status(StatusKind::Warning, reason),
+        }
     }
 
     fn toggle_star(&mut self) {
@@ -1379,54 +1399,15 @@ impl App {
     }
 
     fn confirm_mark_all(&mut self) {
-        // A search only exists on the client, so mark exactly the loaded
-        // results instead of accidentally marking the whole account/feed.
-        let loaded_only = !self.search.is_empty()
-            || matches!(self.selection, Selection::Starred);
-
-        let (scope, prompt) = if loaded_only {
-            let ids: Vec<EntryID> =
-                self.entries.iter().map(|entry| entry.id).collect();
-            if ids.is_empty() {
-                self.set_status(StatusKind::Info, "No loaded entries to mark");
-                return;
+        match self.view_scope() {
+            Ok((scope, description)) => {
+                self.mode = Mode::Confirm {
+                    prompt: format!("Mark {description} as read?"),
+                    action: ConfirmAction::MarkAllRead(scope),
+                };
             }
-            let prompt = if self.search.is_empty() {
-                format!(
-                    "Mark the {} loaded starred entries as read?",
-                    ids.len()
-                )
-            } else {
-                format!("Mark the {} loaded search results as read?", ids.len())
-            };
-            (MarkAllScope::Entries(ids), prompt)
-        } else {
-            let scope = match &self.selection {
-                Selection::All | Selection::Unread => match self.user_id {
-                    Some(id) => MarkAllScope::User(id),
-                    None => {
-                        self.set_status(
-                            StatusKind::Warning,
-                            "Still connecting to Miniflux",
-                        );
-                        return;
-                    }
-                },
-                Selection::Category(id) => MarkAllScope::Category(*id),
-                Selection::Feed(id) => MarkAllScope::Feed(*id),
-                Selection::Starred => unreachable!(),
-            };
-            let prompt = format!(
-                "Mark all entries in “{}” as read?",
-                self.selection_label()
-            );
-            (scope, prompt)
-        };
-
-        self.mode = Mode::Confirm {
-            prompt,
-            action: ConfirmAction::MarkAllRead(scope),
-        };
+            Err(reason) => self.set_status(StatusKind::Warning, reason),
+        }
     }
 
     fn toggle_hide_read_feeds(&mut self) {
@@ -2218,33 +2199,52 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_m_marks_the_selected_entry_feed_read() {
+    fn uppercase_m_marks_the_unread_view_read() {
         let (mut app, mut rx) = test_app();
         let _ = rx.try_recv(); // initial Bootstrap
+        app.user_id = Some(UserID(1));
+        app.selection = Selection::Unread;
+        // The focused pane and the selected entry must not narrow the scope.
+        app.focus = Focus::Feeds;
         app.entries = vec![render_entry(42, "unread")];
-        app.entry_cursor = 0;
-        app.focus = Focus::Entries;
 
         press(&mut app, KeyCode::Char('M'));
 
-        let command = rx.try_recv().expect("mark-feed command");
+        let command = rx.try_recv().expect("mark-view command");
         assert!(matches!(
             command,
             ApiCommand::MarkAllRead {
-                scope: MarkAllScope::Feed(FeedID(7))
+                scope: MarkAllScope::User(UserID(1))
             }
         ));
     }
 
     #[test]
-    fn uppercase_m_uses_the_selected_feed_row() {
+    fn uppercase_m_marks_the_whole_category_read() {
+        let (mut app, mut rx) = test_app();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.selection = Selection::Category(CategoryID(3));
+
+        press(&mut app, KeyCode::Char('M'));
+
+        let command = rx.try_recv().expect("mark-view command");
+        assert!(matches!(
+            command,
+            ApiCommand::MarkAllRead {
+                scope: MarkAllScope::Category(CategoryID(3))
+            }
+        ));
+    }
+
+    #[test]
+    fn uppercase_m_marks_the_selected_feed_read() {
         let (mut app, mut rx) = test_app();
         let _ = rx.try_recv(); // initial Bootstrap
         app.selection = Selection::Feed(FeedID(42));
 
         press(&mut app, KeyCode::Char('M'));
 
-        let command = rx.try_recv().expect("mark-feed command");
+        let command = rx.try_recv().expect("mark-view command");
         assert!(matches!(
             command,
             ApiCommand::MarkAllRead {
@@ -2254,9 +2254,51 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_m_without_a_feed_does_nothing() {
+    fn uppercase_m_marks_only_the_loaded_starred_entries() {
         let (mut app, mut rx) = test_app();
         let _ = rx.try_recv(); // initial Bootstrap
+        app.selection = Selection::Starred;
+        app.entries =
+            vec![render_entry(42, "unread"), render_entry(43, "unread")];
+
+        press(&mut app, KeyCode::Char('M'));
+
+        let command = rx.try_recv().expect("mark-view command");
+        assert!(matches!(
+            command,
+            ApiCommand::MarkAllRead {
+                scope: MarkAllScope::Entries(ids)
+            } if ids == vec![EntryID(42), EntryID(43)]
+        ));
+    }
+
+    #[test]
+    fn uppercase_m_marks_only_the_loaded_search_results() {
+        let (mut app, mut rx) = test_app();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.user_id = Some(UserID(1));
+        app.selection = Selection::Unread;
+        app.search = "rust".to_string();
+        app.entries =
+            vec![render_entry(42, "unread"), render_entry(43, "unread")];
+
+        press(&mut app, KeyCode::Char('M'));
+
+        let command = rx.try_recv().expect("mark-view command");
+        assert!(matches!(
+            command,
+            ApiCommand::MarkAllRead {
+                scope: MarkAllScope::Entries(ids)
+            } if ids == vec![EntryID(42), EntryID(43)]
+        ));
+    }
+
+    #[test]
+    fn uppercase_m_needs_a_connection_for_server_wide_views() {
+        let (mut app, mut rx) = test_app();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.selection = Selection::Unread;
+        app.entries = vec![render_entry(42, "unread")];
 
         press(&mut app, KeyCode::Char('M'));
 
@@ -2264,15 +2306,34 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_m_in_feeds_focus_needs_a_feed_row() {
+    fn uppercase_m_needs_loaded_entries_in_a_client_side_view() {
         let (mut app, mut rx) = test_app();
         let _ = rx.try_recv(); // initial Bootstrap
-        app.entries = vec![render_entry(42, "unread")];
-        app.focus = Focus::Feeds;
-        app.selection = Selection::Unread;
+        app.selection = Selection::Starred;
 
         press(&mut app, KeyCode::Char('M'));
 
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn confirm_mark_all_uses_the_current_view() {
+        let (mut app, mut rx) = test_app();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.user_id = Some(UserID(1));
+
+        press(&mut app, KeyCode::Char('a'));
+
+        match &app.mode {
+            Mode::Confirm { prompt, action } => {
+                assert_eq!(prompt, "Mark all entries in “Unread” as read?");
+                assert!(matches!(
+                    action,
+                    ConfirmAction::MarkAllRead(MarkAllScope::User(UserID(1)))
+                ));
+            }
+            other => panic!("expected the confirm prompt, got {other:?}"),
+        }
         assert!(rx.try_recv().is_err());
     }
 

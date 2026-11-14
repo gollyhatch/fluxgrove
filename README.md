@@ -121,7 +121,7 @@ make it stick.
 | Key | Action |
 | --- | --- |
 | `m` | Toggle read / unread (marks read, advances, and removes the entry when read articles are hidden) |
-| `M` | Mark every entry in the current feed as read |
+| `M` | Mark every entry in the current view as read |
 | `J` / `K` | Next / previous article while the reader is focused; marks it read |
 | `s` | Toggle star / bookmark |
 | `S` | Save the article to a configured Miniflux integration |
