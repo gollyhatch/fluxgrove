@@ -369,11 +369,15 @@ fn draw_entries(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
 
     let inner_width = area.width.saturating_sub(4) as usize;
     let mut total_height = 0usize;
+    // A list item taller than the viewport makes ratatui render no items at
+    // all, blanking the pane, so no entry may grow past the visible height.
+    let max_item_height = inner_height.max(1);
     let items: Vec<ListItem> = app
         .entries
         .iter()
         .map(|entry| {
-            let (item, height) = entry_item(entry, pal, inner_width);
+            let (item, height) =
+                entry_item(entry, pal, inner_width, max_item_height);
             total_height += height;
             item
         })
@@ -400,10 +404,27 @@ fn draw_entries(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     frame.render_stateful_widget(list, area, &mut app.entry_state);
 }
 
+/// Truncate a wrapped title line to `width` columns and mark it as elided.
+fn elide(line: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let mut clipped = util::truncate(line, width);
+    if clipped.ends_with('…') {
+        return clipped;
+    }
+    if util::display_width(&clipped) >= width {
+        clipped.pop();
+    }
+    clipped.push('…');
+    clipped
+}
+
 fn entry_item(
     entry: &miniflux_api::models::Entry,
     pal: &Palette,
     width: usize,
+    max_lines: usize,
 ) -> (ListItem<'static>, usize) {
     let unread = entry.status == EntryStatus::Unread;
     let marker = if unread { "●" } else { "○" };
@@ -422,24 +443,24 @@ fn entry_item(
         entry.title.clone()
     };
     let title_width = width.saturating_sub(4).max(1);
-    let mut title_lines = util::wrap_text(&title, title_width).into_iter();
-    let first_title_line = title_lines.next().unwrap_or_default();
+    let max_lines = max_lines.max(1);
+    // Reserve the metadata line unless the viewport only has room for a title.
+    let show_meta = max_lines > 1;
+    let title_budget = if show_meta { max_lines - 1 } else { max_lines };
+    let mut title_lines = util::wrap_text(&title, title_width);
+    let elided = title_lines.len() > title_budget;
+    title_lines.truncate(title_budget);
+    if elided && let Some(last) = title_lines.last_mut() {
+        *last = elide(last, title_width);
+    }
 
-    let title_line = Line::from(vec![
+    let mut title_lines = title_lines.into_iter();
+    let first_title_line = title_lines.next().unwrap_or_default();
+    let mut lines = vec![Line::from(vec![
         Span::styled(format!("{marker} "), marker_style),
         Span::styled(format!("{star} "), star_style),
         Span::styled(first_title_line, title_style),
-    ]);
-
-    let mut meta = format!(
-        "{} · {}",
-        entry.feed.title,
-        util::relative_time(entry.published_at)
-    );
-    if entry.reading_time > 0 {
-        meta.push_str(&format!(" · {} min", entry.reading_time));
-    }
-    let mut lines = vec![title_line];
+    ])];
 
     for title_line in title_lines {
         lines.push(Line::from(vec![
@@ -447,15 +468,26 @@ fn entry_item(
             Span::styled(title_line, title_style),
         ]));
     }
-    let mut height = lines.len();
 
-    let meta_line = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(util::truncate(&meta, width.saturating_sub(4)), pal.dim()),
-    ]);
-    lines.push(meta_line);
-    height += 1;
+    if show_meta {
+        let mut meta = format!(
+            "{} · {}",
+            entry.feed.title,
+            util::relative_time(entry.published_at)
+        );
+        if entry.reading_time > 0 {
+            meta.push_str(&format!(" · {} min", entry.reading_time));
+        }
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                util::truncate(&meta, width.saturating_sub(4)),
+                pal.dim(),
+            ),
+        ]));
+    }
 
+    let height = lines.len();
     (ListItem::new(lines), height)
 }
 
@@ -821,9 +853,10 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     let area = centered_rect(72, 82, area);
     frame.render_widget(Clear, area);
 
-    let lines = help_lines(pal);
-    let total = lines.len();
+    let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
+    let lines = help_lines(inner_width, pal);
+    let total = lines.len();
     let max_scroll =
         total.saturating_sub(inner_height).min(u16::MAX as usize) as u16;
 
@@ -853,104 +886,127 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     );
 }
 
-fn help_lines(pal: &Palette) -> Vec<Line<'static>> {
+enum HelpRow {
+    Section(&'static str),
+    Key(&'static str, &'static str),
+    Note(&'static str),
+    Tip(&'static str),
+    Blank,
+}
+
+/// Lay the help out for the modal's inner width.
+///
+/// Descriptions wrap under their key column, so the content always fits the
+/// modal and the scroll limit matches the rendered line count.
+fn help_lines(width: usize, pal: &Palette) -> Vec<Line<'static>> {
+    const INDENT: usize = 2;
+    const KEY_WIDTH: usize = 16;
+    let indent = " ".repeat(INDENT);
+
     let mut lines = Vec::new();
-    let section = |lines: &mut Vec<Line<'static>>, title: &str| {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  {title}"),
-            pal.heading(),
-        )));
-    };
-
-    lines.push(Line::from(Span::styled(
-        "  fluxgrove · vim keys for Miniflux",
-        pal.muted(),
-    )));
-
-    section(&mut lines, "Navigation");
-    lines.push(help_key("j / k", "move cursor, scroll article", pal));
-    lines.push(help_key("h / l", "focus pane left / right", pal));
-    lines.push(help_key("Tab", "cycle panes", pal));
-    lines.push(help_key("1 / 2 / 3", "focus feeds / entries / reader", pal));
-    lines.push(help_key("g / G", "go to top / bottom", pal));
-    lines.push(help_key(
-        "n",
-        "subscribe to a website (feeds are detected)",
-        pal,
-    ));
-    lines.push(help_key(
-        "f (Feeds)",
-        "hide / show feeds without unread entries",
-        pal,
-    ));
-    lines.push(help_key("f (Entries)", "hide / show read articles", pal));
-    lines.push(help_key("Ctrl-d / Ctrl-u", "half page down / up", pal));
-    lines.push(help_key("PgUp / PgDn", "page up / down", pal));
-    lines.push(help_key("Ctrl-f / Ctrl-b", "full page down / up", pal));
-    lines.push(help_key("Enter", "open entry in the reader", pal));
-    lines.push(help_key("Esc", "go back one pane", pal));
-
-    section(&mut lines, "Reading");
-    lines.push(help_key("m", "mark read (and advance) / unread", pal));
-    lines.push(help_key(
-        "M",
-        "mark every entry in the current feed as read",
-        pal,
-    ));
-    lines.push(help_key(
-        "J / K",
-        "next / previous article (marks it read)",
-        pal,
-    ));
-    lines.push(help_key("s", "toggle star / bookmark", pal));
-    lines.push(help_key(
-        "S",
-        "save the article to a Miniflux integration",
-        pal,
-    ));
-    lines.push(help_key(
-        "F",
-        "fetch and display the original article content",
-        pal,
-    ));
-    lines.push(help_key("a", "mark everything in view as read", pal));
-    lines.push(help_key("o", "open the original article in a browser", pal));
-    lines.push(help_key(
-        "Ctrl-o",
-        "open the original article in the XDG default browser",
-        pal,
-    ));
-    lines.push(help_key("r", "ask Miniflux to refresh feeds", pal));
-
-    section(&mut lines, "Searching");
-    lines.push(help_key("/", "search entries", pal));
-    lines.push(help_key("Enter", "apply the search", pal));
-    lines.push(help_key("Esc", "cancel the search", pal));
-    lines.push(help_key("c", "clear the active search", pal));
-
-    section(&mut lines, "Appearance");
-    lines.push(help_key("t", "choose a theme (live preview)", pal));
-    lines.push(help_key("q", "quit", pal));
-    lines.push(help_key("?", "toggle this help", pal));
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Tips: feeds and categories are selectable in the sidebar;",
-        pal.dim(),
-    )));
-    lines.push(Line::from(Span::styled(
-        "  opening an unread entry marks it as read automatically.",
-        pal.dim(),
-    )));
+    for row in help_rows() {
+        match row {
+            HelpRow::Blank => lines.push(Line::from("")),
+            HelpRow::Section(title) => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("{indent}{title}"),
+                    pal.heading(),
+                )));
+            }
+            HelpRow::Note(text) => {
+                help_paragraph(text, width, INDENT, pal.muted(), &mut lines);
+            }
+            HelpRow::Tip(text) => {
+                help_paragraph(text, width, INDENT, pal.dim(), &mut lines);
+            }
+            HelpRow::Key(key, description) => {
+                let available = width.saturating_sub(INDENT + KEY_WIDTH).max(8);
+                let mut wrapped = util::wrap_text(description, available);
+                if wrapped.is_empty() {
+                    wrapped.push(String::new());
+                }
+                let mut wrapped = wrapped.into_iter();
+                let first = wrapped.next().unwrap_or_default();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{indent}{key:<KEY_WIDTH$}"),
+                        pal.key(),
+                    ),
+                    Span::styled(first, pal.text()),
+                ]));
+                for continuation in wrapped {
+                    lines.push(Line::from(vec![
+                        Span::raw(" ".repeat(INDENT + KEY_WIDTH)),
+                        Span::styled(continuation, pal.text()),
+                    ]));
+                }
+            }
+        }
+    }
     lines
 }
 
-fn help_key(key: &str, description: &str, pal: &Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("  {key:<16}"), pal.key()),
-        Span::styled(description.to_string(), pal.text()),
-    ])
+fn help_paragraph(
+    text: &str,
+    width: usize,
+    indent: usize,
+    style: Style,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let padding = " ".repeat(indent);
+    let available = width.saturating_sub(indent).max(1);
+    for line in util::wrap_text(text, available) {
+        lines.push(Line::from(Span::styled(format!("{padding}{line}"), style)));
+    }
+}
+
+fn help_rows() -> Vec<HelpRow> {
+    use HelpRow::{Blank, Key, Note, Section, Tip};
+
+    vec![
+        Note("fluxgrove · vim keys for Miniflux"),
+        Section("Navigation"),
+        Key("j / k", "move cursor, scroll article"),
+        Key("h / l", "focus pane left / right"),
+        Key("Tab", "cycle panes"),
+        Key("1 / 2 / 3", "focus feeds / entries / reader"),
+        Key("g / G", "go to top / bottom"),
+        Key("n", "subscribe to a website (feeds are detected)"),
+        Key("f (Feeds)", "hide / show feeds without unread entries"),
+        Key("f (Entries)", "hide / show read articles"),
+        Key("Ctrl-d / Ctrl-u", "half page down / up"),
+        Key("PgUp / PgDn", "page up / down"),
+        Key("Ctrl-f / Ctrl-b", "full page down / up"),
+        Key("Enter", "open entry in the reader"),
+        Key("Esc", "go back one pane"),
+        Section("Reading"),
+        Key("m", "mark read (and advance) / unread"),
+        Key("M", "mark every entry in the current feed as read"),
+        Key("J / K", "next / previous article (marks it read)"),
+        Key("s", "toggle star / bookmark"),
+        Key("S", "save the article to a Miniflux integration"),
+        Key("F", "fetch and display the original article content"),
+        Key("a", "mark everything in view as read"),
+        Key("o", "open the original article in a browser"),
+        Key(
+            "Ctrl-o",
+            "open the original article in the XDG default browser",
+        ),
+        Key("r", "ask Miniflux to refresh feeds"),
+        Section("Searching"),
+        Key("/", "search entries"),
+        Key("Enter", "apply the search"),
+        Key("Esc", "cancel the search"),
+        Key("c", "clear the active search"),
+        Section("Appearance"),
+        Key("t", "choose a theme (live preview)"),
+        Key("q", "quit"),
+        Key("?", "toggle this help"),
+        Blank,
+        Tip("Tips: feeds and categories are selectable in the sidebar;"),
+        Tip("opening an unread entry marks it as read automatically."),
+    ]
 }
 
 fn draw_confirm(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
@@ -1007,9 +1063,15 @@ fn draw_feed_picker(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         return;
     };
 
-    let max_height = area.height.saturating_sub(2).max(7);
-    let height = (subscriptions.len() as u16 * 2 + 6).clamp(9, max_height);
-    let width = (area.width * 68 / 100)
+    // Two content lines per feed plus the border and titles. Never let the
+    // popup exceed the frame: a short terminal must still render.
+    let max_height = area.height.saturating_sub(2).max(1).min(area.height);
+    let desired_height =
+        subscriptions.len().saturating_mul(2).saturating_add(6);
+    let height = u16::try_from(desired_height)
+        .unwrap_or(u16::MAX)
+        .min(max_height);
+    let width = ((u32::from(area.width) * 68 / 100) as u16)
         .max(24)
         .min(area.width.saturating_sub(2).max(1));
     let area = Rect {
@@ -1129,16 +1191,208 @@ fn draw_theme_picker(
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let width = (area.width * percent_x / 100)
-        .max(24)
-        .min(area.width.saturating_sub(2));
-    let height = (area.height * percent_y / 100)
-        .max(7)
-        .min(area.height.saturating_sub(2));
+    // Percentages are computed in u32: `u16 * u16` overflows on ultrawide
+    // terminals (911+ columns), which panics in debug builds.
+    let width = (u32::from(area.width) * u32::from(percent_x) / 100) as u16;
+    let width = width.max(24).min(area.width.saturating_sub(2));
+    let height = (u32::from(area.height) * u32::from(percent_y) / 100) as u16;
+    let height = height.max(7).min(area.height.saturating_sub(2));
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
         width,
         height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        app::Mode,
+        config::{Auth, Config},
+    };
+    use miniflux_api::models::{CategoryID, Subscription};
+    use ratatui::{Terminal, backend::TestBackend};
+    use url::Url;
+
+    fn test_app() -> App {
+        let config = Config {
+            url: Url::parse("http://localhost/").expect("test URL"),
+            auth: Auth::Token("test".to_string()),
+            theme: "catppuccin-mocha".to_string(),
+            limit: 100,
+            mark_read: true,
+            hide_read_feeds: false,
+            hide_read_entries: false,
+        };
+        let theme = opaline::builtins::load_by_name("catppuccin-mocha")
+            .expect("builtin theme");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        App::new(config, theme, "catppuccin-mocha".to_string(), tx)
+    }
+
+    fn render_at(app: &mut App, width: u16, height: u16) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, app))
+            .expect("draw the frame");
+    }
+
+    #[test]
+    fn feed_picker_renders_in_a_short_terminal() {
+        let mut app = test_app();
+        app.mode = Mode::FeedPicker {
+            subscriptions: vec![
+                Subscription {
+                    url: "https://example.com/rss.xml".to_string(),
+                    title: "RSS".to_string(),
+                    kind: "rss".to_string(),
+                },
+                Subscription {
+                    url: "https://example.com/atom.xml".to_string(),
+                    title: "Atom".to_string(),
+                    kind: "atom".to_string(),
+                },
+            ],
+            cursor: 0,
+            category_id: CategoryID(1),
+        };
+
+        for height in 1..=12 {
+            render_at(&mut app, 80, height);
+        }
+    }
+
+    fn probe_entry() -> miniflux_api::models::Entry {
+        let long_title = "A very long entry title that has to wrap ".repeat(8);
+        serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "user_id": 1,
+            "feed_id": 7,
+            "status": "unread",
+            "hash": "hash-1",
+            "title": long_title,
+            "url": "https://example.com/1",
+            "author": "Author",
+            "content": format!("<p>{}</p>", "Body text ".repeat(200)),
+            "published_at": "2026-01-01T00:00:00Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "share_code": "",
+            "starred": true,
+            "reading_time": 9,
+            "enclosures": [],
+            "tags": ["one", "two"],
+            "feed": {
+                "id": 7,
+                "user_id": 1,
+                "title": "A feed with a rather long title for truncation",
+                "site_url": "https://example.com",
+                "feed_url": "https://example.com/feed.xml",
+                "category": {"id": 3, "user_id": 1, "title": "Category"}
+            }
+        }))
+        .expect("valid test entry")
+    }
+
+    #[test]
+    fn layouts_render_across_terminal_sizes() {
+        let mut app = test_app();
+        app.entries = vec![probe_entry(), probe_entry()];
+        app.entry_state.select(Some(0));
+        app.ensure_article();
+        let widths = [
+            1u16, 2, 3, 10, 21, 22, 40, 65, 66, 99, 100, 101, 140, 911, 1300,
+        ];
+        let heights = [1u16, 2, 3, 4, 6, 7, 9, 10, 11, 24, 40];
+        let modes = [
+            Mode::Normal,
+            Mode::Help { scroll: u16::MAX },
+            Mode::Confirm {
+                prompt: "Mark every entry in this view as read?".to_string(),
+                action: crate::app::ConfirmAction::MarkAllRead(
+                    crate::api::MarkAllScope::User(
+                        miniflux_api::models::UserID(1),
+                    ),
+                ),
+            },
+            Mode::ThemePicker {
+                cursor: 3,
+                original: "catppuccin-mocha".to_string(),
+            },
+            Mode::FeedPicker {
+                subscriptions: vec![
+                    Subscription {
+                        url: "https://example.com/rss.xml".to_string(),
+                        title: "RSS".to_string(),
+                        kind: "rss".to_string(),
+                    },
+                    Subscription {
+                        url: "https://example.com/atom.xml".to_string(),
+                        title: "Atom".to_string(),
+                        kind: "atom".to_string(),
+                    },
+                ],
+                cursor: 1,
+                category_id: CategoryID(1),
+            },
+        ];
+        for mode in modes {
+            app.mode = mode;
+            for width in widths {
+                for height in heights {
+                    render_at(&mut app, width, height);
+                }
+            }
+        }
+    }
+
+    fn render_text(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, app))
+            .expect("draw the frame");
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area().height {
+            for x in 0..buffer.area().width {
+                text.push_str(
+                    buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()),
+                );
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn entries_keep_the_selected_row_visible_in_a_short_pane() {
+        let mut app = test_app();
+        app.entries = vec![probe_entry(), probe_entry()];
+        app.focus = Focus::Entries;
+        app.entry_cursor = 0;
+        app.entry_state.select(Some(0));
+
+        let text = render_text(&mut app, 80, 8);
+
+        assert!(
+            text.contains("▸"),
+            "the entries pane rendered no selected row: {text:?}"
+        );
+    }
+
+    #[test]
+    fn help_wraps_its_descriptions_at_eighty_columns() {
+        let mut app = test_app();
+        app.mode = Mode::Help { scroll: 0 };
+
+        let text = render_text(&mut app, 80, 24);
+
+        assert!(
+            text.contains("detected)"),
+            "help text was clipped instead of wrapped: {text:?}"
+        );
     }
 }
