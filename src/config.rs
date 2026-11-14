@@ -1,5 +1,6 @@
 use std::{
-    env, fs,
+    fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
@@ -106,30 +107,44 @@ pub fn default_config_path() -> PathBuf {
 
 impl Config {
     pub fn load(cli: &Cli) -> Result<Self> {
-        let path = cli
-            .config
-            .clone()
-            .or_else(|| env::var_os("FLUXGROVE_CONFIG").map(PathBuf::from))
-            .unwrap_or_else(default_config_path);
-
-        let file = read_file(&path)?;
+        // `--config` also carries FLUXGROVE_CONFIG through clap.
+        let explicit_config = cli.config.is_some();
+        let path = cli.config.clone().unwrap_or_else(default_config_path);
+        let file = read_file(&path, explicit_config)?;
 
         let url = cli
             .url
             .clone()
             .or(file.url)
             .ok_or_else(|| missing_config_error(&path, "url"))?;
-        let token = cli
-            .token
-            .clone()
-            .or(file.token)
-            .filter(|t| !t.trim().is_empty());
-        let username = cli
+
+        let cli_token =
+            cli.token.clone().filter(|token| !token.trim().is_empty());
+        let cli_username = cli
             .username
             .clone()
+            .filter(|username| !username.trim().is_empty());
+        let cli_password = cli
+            .password
+            .clone()
+            .filter(|password| !password.trim().is_empty());
+        // Credentials given on the command line (or through their environment
+        // variables) outrank the config file, including its token.
+        let cli_credentials = cli_token.is_some()
+            || cli_username.is_some()
+            || cli_password.is_some();
+        let token = if cli_credentials && cli_token.is_none() {
+            None
+        } else {
+            cli_token.or(file.token)
+        }
+        .filter(|token| !token.trim().is_empty());
+        let username = cli_username
             .or(file.username)
-            .filter(|u| !u.is_empty());
-        let password = cli.password.clone().or(file.password);
+            .filter(|username| !username.trim().is_empty());
+        let password = cli_password
+            .or(file.password)
+            .filter(|password| !password.trim().is_empty());
 
         let auth = match (token, username, password) {
             (Some(token), _, _) => Auth::Token(token),
@@ -182,13 +197,18 @@ impl Config {
     }
 }
 
-fn read_file(path: &Path) -> Result<FileConfig> {
-    if !path.exists() {
-        return Ok(FileConfig::default());
-    }
-    let raw = fs::read_to_string(path).with_context(|| {
-        format!("could not read configuration file {}", path.display())
-    })?;
+fn read_file(path: &Path, required: bool) -> Result<FileConfig> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == ErrorKind::NotFound && !required => {
+            return Ok(FileConfig::default());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("could not read configuration file {}", path.display())
+            });
+        }
+    };
     toml::from_str(&raw).with_context(|| {
         format!("could not parse configuration file {}", path.display())
     })
@@ -205,4 +225,95 @@ fn missing_config_error(path: &Path, field: &str) -> anyhow::Error {
          Generate an API token in Miniflux under Settings → API Keys.",
         path.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempConfig(PathBuf);
+
+    impl TempConfig {
+        fn new(body: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock before the epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "fluxgrove-config-{}-{unique}.toml",
+                std::process::id()
+            ));
+            fs::write(&path, body).expect("write the temporary config");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempConfig {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    fn cli(config: Option<PathBuf>) -> Cli {
+        Cli {
+            config,
+            url: None,
+            token: None,
+            username: None,
+            password: None,
+            theme: None,
+            limit: None,
+            list_themes: false,
+        }
+    }
+
+    #[test]
+    fn command_line_credentials_override_the_file_token() {
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"file-token\"\n",
+        );
+        let mut cli = cli(Some(file.0.clone()));
+        cli.username = Some("alice".to_string());
+        cli.password = Some("secret".to_string());
+
+        let config = Config::load(&cli).expect("config should load");
+
+        assert!(matches!(
+            config.auth,
+            Auth::Password { username, password }
+                if username == "alice" && password == "secret"
+        ));
+    }
+
+    #[test]
+    fn file_token_is_used_when_no_credentials_are_given() {
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"file-token\"\n",
+        );
+
+        let config = Config::load(&cli(Some(file.0.clone())))
+            .expect("config should load");
+
+        assert!(
+            matches!(config.auth, Auth::Token(token) if token == "file-token")
+        );
+    }
+
+    #[test]
+    fn a_missing_explicit_config_file_is_an_error() {
+        let path =
+            std::env::temp_dir().join("fluxgrove-definitely-missing.toml");
+        let _ = fs::remove_file(&path);
+
+        assert!(Config::load(&cli(Some(path))).is_err());
+    }
+
+    #[test]
+    fn a_blank_password_is_rejected() {
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\nusername = \"demo\"\npassword = \"\"\n",
+        );
+
+        assert!(Config::load(&cli(Some(file.0.clone()))).is_err());
+    }
 }

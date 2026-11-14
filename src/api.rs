@@ -41,9 +41,8 @@ pub enum ApiCommand {
         id: EntryID,
         read: bool,
     },
-    SetStarred {
+    ToggleStarred {
         id: EntryID,
-        starred: bool,
     },
     SaveEntry {
         id: EntryID,
@@ -191,13 +190,26 @@ impl ApiClient {
                     }
                 }
             }
-            ApiCommand::SetStarred { id, starred } => {
+            ApiCommand::ToggleStarred { id } => {
                 // The bookmark toggle endpoint works on older Miniflux
-                // releases, unlike the bulk starred update.
+                // releases, unlike the bulk starred update. Read the entry
+                // back afterwards so the UI shows the server's actual state:
+                // a toggle applied to a stale local copy inverts it for good.
                 match self.api.toggle_bookmark(id, &self.http).await {
-                    Ok(()) => {
-                        send(events, ApiEvent::StarredUpdated { id, starred })
-                    }
+                    Ok(()) => match self.api.get_entry(id, &self.http).await {
+                        Ok(entry) => send(
+                            events,
+                            ApiEvent::StarredUpdated {
+                                id,
+                                starred: entry.starred,
+                            },
+                        ),
+                        Err(error) => send_error(
+                            events,
+                            "Could not confirm the bookmark",
+                            error,
+                        ),
+                    },
                     Err(error) => {
                         send_error(
                             events,
@@ -402,7 +414,128 @@ fn send_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Selection;
+    use crate::{app::Selection, config::Auth};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    fn test_config(url: &str) -> Config {
+        Config {
+            url: Url::parse(url).expect("valid Miniflux URL"),
+            auth: Auth::Token("test-token".to_string()),
+            theme: "catppuccin-mocha".to_string(),
+            limit: 100,
+            mark_read: true,
+            hide_read_feeds: false,
+            hide_read_entries: false,
+        }
+    }
+
+    /// Serve the two requests a bookmark toggle makes: the PUT toggle, then the
+    /// GET that reports the entry's actual state. Each response closes the
+    /// connection so reqwest cannot pipeline them over one socket.
+    async fn serve_bookmark_flow(
+        listener: TcpListener,
+        entry: serde_json::Value,
+    ) -> Vec<String> {
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buffer = vec![0u8; 8192];
+            let read = socket.read(&mut buffer).await.expect("read request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            let request_line =
+                request.lines().next().unwrap_or_default().to_string();
+            let response =
+                if request_line.starts_with("PUT /v1/entries/42/bookmark ") {
+                    "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                } else if request_line.starts_with("GET /v1/entries/42 ") {
+                    let body = entry.to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\
+                 Connection: close\r\n\r\n"
+                        .to_string()
+                };
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            requests.push(request_line);
+        }
+        requests
+    }
+
+    fn entry_json(starred: bool) -> serde_json::Value {
+        serde_json::json!({
+            "id": 42,
+            "user_id": 1,
+            "feed_id": 7,
+            "status": "unread",
+            "hash": "hash-42",
+            "title": "Entry",
+            "url": "https://example.com/42",
+            "author": "Author",
+            "content": "<p>Body</p>",
+            "published_at": "2026-01-01T00:00:00Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "share_code": "",
+            "starred": starred,
+            "reading_time": 1,
+            "enclosures": [],
+            "tags": [],
+            "feed": {
+                "id": 7,
+                "user_id": 1,
+                "title": "Feed",
+                "site_url": "https://example.com",
+                "feed_url": "https://example.com/feed.xml",
+                "category": {"id": 3, "user_id": 1, "title": "Category"}
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn toggling_a_bookmark_reports_the_server_state() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let server =
+            tokio::spawn(serve_bookmark_flow(listener, entry_json(true)));
+
+        let client =
+            ApiClient::new(&test_config(&format!("http://{address}/")))
+                .expect("api client");
+        let (events, mut received) = mpsc::unbounded_channel();
+        client
+            .run(ApiCommand::ToggleStarred { id: EntryID(42) }, &events)
+            .await;
+
+        let event = received.recv().await.expect("an event");
+        assert!(
+            matches!(
+                event,
+                ApiEvent::StarredUpdated { id, starred: true } if id == EntryID(42)
+            ),
+            "unexpected event: {event:?}"
+        );
+
+        let requests = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server finished")
+            .expect("server task");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("PUT /v1/entries/42/bookmark "));
+        assert!(requests[1].starts_with("GET /v1/entries/42 "));
+    }
 
     #[test]
     fn unread_filter_uses_status_and_sorting() {

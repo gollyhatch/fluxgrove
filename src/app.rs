@@ -1306,7 +1306,7 @@ impl App {
         {
             entry.starred = starred;
         }
-        self.send(ApiCommand::SetStarred { id, starred });
+        self.send(ApiCommand::ToggleStarred { id });
         self.set_status(
             StatusKind::Info,
             if starred {
