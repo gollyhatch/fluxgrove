@@ -275,12 +275,20 @@ pub enum ConfirmAction {
     MarkAllRead(MarkAllScope),
 }
 
+/// Which list `/` filters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchScope {
+    Entries,
+    Feeds,
+}
+
 #[derive(Debug, Default)]
 pub enum Mode {
     #[default]
     Normal,
     Search {
         input: String,
+        scope: SearchScope,
     },
     Subscribe {
         input: String,
@@ -351,6 +359,7 @@ pub struct App {
     pub total_entries: Option<i64>,
 
     pub search: String,
+    pub feed_filter: String,
     pub focus: Focus,
     pub mode: Mode,
     pub status: Option<StatusMessage>,
@@ -410,6 +419,7 @@ impl App {
             entry_page: 10,
             total_entries: None,
             search: String::new(),
+            feed_filter: String::new(),
             focus: Focus::Feeds,
             mode: Mode::Normal,
             status: None,
@@ -510,6 +520,11 @@ impl App {
         let mut rows =
             vec![SidebarRow::Unread, SidebarRow::All, SidebarRow::Starred];
 
+        let filter = self.feed_filter.trim().to_lowercase();
+        let matches = |title: &str| {
+            filter.is_empty() || title.to_lowercase().contains(&filter)
+        };
+
         let mut categories: Vec<&Category> = self.categories.iter().collect();
         categories.sort_by_key(|category| category.title.to_lowercase());
 
@@ -528,11 +543,22 @@ impl App {
                     self.feed_unread(feed.id) > 0
                         || self.selection == Selection::Feed(feed.id)
                 });
-                // Keep a selected category visible even after its last feed
-                // becomes read, so the panel does not jump under the cursor.
-                if feeds.is_empty() && !category_selected {
-                    continue;
-                }
+            }
+            if !matches(&category.title) {
+                // The selected feed and category stay visible so the view
+                // does not change under the cursor while filtering.
+                feeds.retain(|feed| {
+                    matches(&feed.title)
+                        || self.selection == Selection::Feed(feed.id)
+                });
+            }
+            // Keep a selected category visible even when its last feed is
+            // filtered out, so the panel does not jump under the cursor.
+            if feeds.is_empty()
+                && !category_selected
+                && (self.hide_read_feeds || !filter.is_empty())
+            {
+                continue;
             }
 
             rows.push(SidebarRow::Category {
@@ -622,7 +648,9 @@ impl App {
                 let mode = std::mem::take(&mut self.mode);
                 match mode {
                     Mode::Normal => self.handle_normal(key),
-                    Mode::Search { input } => self.handle_search(key, input),
+                    Mode::Search { input, scope } => {
+                        self.handle_search(key, input, scope)
+                    }
                     Mode::Subscribe { input } => {
                         self.handle_subscribe(key, input)
                     }
@@ -712,7 +740,9 @@ impl App {
 
             KeyCode::Enter => self.activate(),
             KeyCode::Esc => {
-                if self.search.is_empty() {
+                if self.focus == Focus::Feeds && !self.feed_filter.is_empty() {
+                    self.clear_feed_filter();
+                } else if self.search.is_empty() {
                     self.focus_left();
                 } else {
                     self.clear_search();
@@ -745,9 +775,12 @@ impl App {
             KeyCode::Char('o') => self.open_selected(),
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Char('/') => {
-                self.mode = Mode::Search {
-                    input: self.search.clone(),
+                let (input, scope) = if self.focus == Focus::Feeds {
+                    (self.feed_filter.clone(), SearchScope::Feeds)
+                } else {
+                    (self.search.clone(), SearchScope::Entries)
                 };
+                self.mode = Mode::Search { input, scope };
             }
             KeyCode::Char('c') => self.clear_search(),
             KeyCode::Char('n') => {
@@ -768,6 +801,7 @@ impl App {
         &mut self,
         key: crossterm::event::KeyEvent,
         mut input: String,
+        scope: SearchScope,
     ) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -776,26 +810,44 @@ impl App {
                 self.mode = Mode::Normal;
             }
             KeyCode::Enter => {
-                self.search = input.trim().to_string();
                 self.mode = Mode::Normal;
-                self.focus = Focus::Entries;
-                self.load_entries(true);
-                if !self.search.is_empty() {
-                    self.set_status(
-                        StatusKind::Info,
-                        format!("Search: {}", self.search),
-                    );
+                let value = input.trim().to_string();
+                match scope {
+                    SearchScope::Entries => {
+                        self.search = value;
+                        self.focus = Focus::Entries;
+                        self.load_entries(true);
+                        if !self.search.is_empty() {
+                            self.set_status(
+                                StatusKind::Info,
+                                format!("Search: {}", self.search),
+                            );
+                        }
+                    }
+                    SearchScope::Feeds => {
+                        self.feed_filter = value;
+                        self.focus = Focus::Feeds;
+                        self.sync_sidebar_cursor();
+                        self.set_status(
+                            StatusKind::Info,
+                            if self.feed_filter.is_empty() {
+                                "Feed filter cleared".to_string()
+                            } else {
+                                format!("Feed filter: {}", self.feed_filter)
+                            },
+                        );
+                    }
                 }
             }
             KeyCode::Backspace => {
                 input.pop();
-                self.mode = Mode::Search { input };
+                self.mode = Mode::Search { input, scope };
             }
             KeyCode::Char('u')
                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 input.clear();
-                self.mode = Mode::Search { input };
+                self.mode = Mode::Search { input, scope };
             }
             KeyCode::Char('w')
                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -808,7 +860,7 @@ impl App {
                         break;
                     }
                 }
-                self.mode = Mode::Search { input };
+                self.mode = Mode::Search { input, scope };
             }
             KeyCode::Char(ch)
                 if !key.modifiers.intersects(
@@ -818,10 +870,10 @@ impl App {
                 ) =>
             {
                 input.push(ch);
-                self.mode = Mode::Search { input };
+                self.mode = Mode::Search { input, scope };
             }
             _ => {
-                self.mode = Mode::Search { input };
+                self.mode = Mode::Search { input, scope };
             }
         }
     }
@@ -1935,6 +1987,15 @@ impl App {
                 "Showing all entries"
             },
         );
+    }
+
+    fn clear_feed_filter(&mut self) {
+        if self.feed_filter.is_empty() {
+            return;
+        }
+        self.feed_filter.clear();
+        self.sync_sidebar_cursor();
+        self.set_status(StatusKind::Info, "Feed filter cleared");
     }
 
     fn clear_search(&mut self) {
@@ -3355,5 +3416,151 @@ mod tests {
         press(&mut app, KeyCode::Esc);
 
         assert_eq!(app.focus, Focus::Entries);
+    }
+
+    #[test]
+    fn slash_in_feeds_opens_the_feed_filter() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.focus = Focus::Feeds;
+
+        press(&mut app, KeyCode::Char('/'));
+        assert!(matches!(
+            app.mode,
+            Mode::Search {
+                scope: SearchScope::Feeds,
+                ..
+            }
+        ));
+        for ch in "exam".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.feed_filter, "exam");
+        assert!(app.search.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn slash_outside_feeds_searches_entries() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.bootstrapped = true;
+        app.focus = Focus::Entries;
+
+        press(&mut app, KeyCode::Char('/'));
+        assert!(matches!(
+            app.mode,
+            Mode::Search {
+                scope: SearchScope::Entries,
+                ..
+            }
+        ));
+        for ch in "rust".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.search, "rust");
+        assert!(app.feed_filter.is_empty());
+        assert_eq!(app.focus, Focus::Entries);
+        assert!(matches!(
+            rx.try_recv().expect("load-entries command"),
+            ApiCommand::LoadEntries { filter, .. }
+                if filter.search.as_deref() == Some("rust")
+        ));
+    }
+
+    #[test]
+    fn feed_filter_narrows_the_sidebar() {
+        let (mut app, _rx) = test_app_with_feed();
+        app.feeds.push(render_feed(9, "Cooking", 2));
+        app.feed_filter = "exam".to_string();
+
+        let rows = app.sidebar_rows();
+
+        assert!(rows.iter().any(
+            |row| matches!(row, SidebarRow::Feed { id, .. } if *id == FeedID(7))
+        ));
+        assert!(!rows.iter().any(
+            |row| matches!(row, SidebarRow::Feed { id, .. } if *id == FeedID(9))
+        ));
+        assert!(rows.iter().any(|row| matches!(
+            row,
+            SidebarRow::Category { id, .. } if *id == CategoryID(1)
+        )));
+        assert!(!rows.iter().any(|row| matches!(
+            row,
+            SidebarRow::Category { id, .. } if *id == CategoryID(2)
+        )));
+        assert!(matches!(rows.first(), Some(SidebarRow::Unread)));
+    }
+
+    #[test]
+    fn feed_filter_matches_category_titles() {
+        let (mut app, _rx) = test_app_with_feed();
+        app.feeds.push(render_feed(9, "Cooking", 2));
+        app.feed_filter = "news".to_string();
+
+        let rows = app.sidebar_rows();
+
+        // The category title matches, so its feed is shown even though the
+        // feed title does not contain the filter.
+        assert!(rows.iter().any(
+            |row| matches!(row, SidebarRow::Feed { id, .. } if *id == FeedID(7))
+        ));
+        assert!(!rows.iter().any(
+            |row| matches!(row, SidebarRow::Feed { id, .. } if *id == FeedID(9))
+        ));
+    }
+
+    #[test]
+    fn escape_in_feeds_clears_the_feed_filter() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.focus = Focus::Feeds;
+        app.feed_filter = "exam".to_string();
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.feed_filter.is_empty());
+        assert_eq!(app.focus, Focus::Feeds);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn escape_in_entries_clears_the_search_not_the_feed_filter() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.bootstrapped = true;
+        app.focus = Focus::Entries;
+        app.search = "rust".to_string();
+        app.feed_filter = "exam".to_string();
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.search.is_empty());
+        assert_eq!(app.feed_filter, "exam");
+        assert_eq!(app.focus, Focus::Entries);
+        assert!(matches!(
+            rx.try_recv().expect("load-entries command"),
+            ApiCommand::LoadEntries { filter, .. } if filter.search.is_none()
+        ));
+    }
+
+    #[test]
+    fn the_selected_feed_stays_visible_under_a_filter() {
+        let (mut app, _rx) = test_app_with_feed();
+        app.feeds.push(render_feed(9, "Cooking", 2));
+        app.selection = Selection::Feed(FeedID(9));
+        app.feed_filter = "exam".to_string();
+
+        let rows = app.sidebar_rows();
+
+        assert!(rows.iter().any(
+            |row| matches!(row, SidebarRow::Feed { id, .. } if *id == FeedID(9))
+        ));
     }
 }

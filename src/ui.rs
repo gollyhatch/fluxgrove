@@ -12,7 +12,10 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, FeedField, FeedForm, Focus, Mode, SidebarRow, StatusKind},
+    app::{
+        App, FeedField, FeedForm, Focus, Mode, SearchScope, SidebarRow,
+        StatusKind,
+    },
     util,
 };
 
@@ -257,7 +260,9 @@ fn draw_feeds(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
         .map(|row| sidebar_item(app, row, pal, inner_width))
         .collect();
 
-    let feeds_counter = if app.hide_read_feeds {
+    let feeds_counter = if !app.feed_filter.trim().is_empty() {
+        format!("/{} · {}", app.feed_filter.trim(), app.unread_total())
+    } else if app.hide_read_feeds {
         format!("{} · filtered", app.unread_total())
     } else {
         format!("{} unread", app.unread_total())
@@ -655,8 +660,12 @@ fn pane_block(
 fn draw_status(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     frame.render_widget(Block::default().style(pal.base()), area);
 
-    if let Mode::Search { input } = &app.mode {
-        draw_input_prompt(frame, area, "/", input, pal);
+    if let Mode::Search { input, scope } = &app.mode {
+        let prefix = match scope {
+            SearchScope::Entries => "/",
+            SearchScope::Feeds => "Feeds: ",
+        };
+        draw_input_prompt(frame, area, prefix, input, pal);
         return;
     }
 
@@ -760,6 +769,10 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
     frame.render_widget(Block::default().style(pal.panel()), area);
 
     let hints: &[(&str, &str)] = match &app.mode {
+        Mode::Search {
+            scope: SearchScope::Feeds,
+            ..
+        } => &[("Enter", "filter"), ("Esc", "cancel"), ("Ctrl-u", "clear")],
         Mode::Search { .. } => {
             &[("Enter", "search"), ("Esc", "cancel"), ("Ctrl-u", "clear")]
         }
@@ -784,6 +797,7 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
                 ("l", "entries"),
                 ("n", "new feed"),
                 ("E", "edit feed"),
+                ("/", "filter"),
                 (
                     "f",
                     if app.hide_read_feeds {
@@ -798,7 +812,6 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
                 ("S", "save"),
                 ("Ctrl-o", "XDG"),
                 ("a", "all read"),
-                ("/", "search"),
                 ("r", "refresh"),
                 ("t", "theme"),
                 ("?", "help"),
@@ -994,7 +1007,7 @@ fn help_rows() -> Vec<HelpRow> {
         Key("PgUp / PgDn", "page up / down"),
         Key("Ctrl-f / Ctrl-b", "full page down / up"),
         Key("Enter", "open entry in the reader"),
-        Key("Esc", "clear the search, or go back one pane"),
+        Key("Esc", "clear the search or feed filter, or go back"),
         Section("Reading"),
         Key("m", "mark read (and advance) / unread"),
         Key("M", "mark every entry in the current view as read"),
@@ -1010,7 +1023,7 @@ fn help_rows() -> Vec<HelpRow> {
         ),
         Key("r", "ask Miniflux to refresh feeds"),
         Section("Searching"),
-        Key("/", "search entries"),
+        Key("/", "search entries, or filter feeds"),
         Key("Enter", "apply the search"),
         Key("Esc", "cancel the search"),
         Key("c", "clear the active search"),
@@ -1654,6 +1667,10 @@ mod tests {
                 category_picker: None,
                 confirm_delete: true,
             },
+            Mode::Search {
+                input: "rust".to_string(),
+                scope: SearchScope::Feeds,
+            },
         ];
         for mode in modes {
             app.mode = mode;
@@ -1846,5 +1863,24 @@ mod tests {
         let text = render_text(&mut app, 80, 30);
         assert!(text.contains("Ctrl-u clear"), "{text:?}");
         assert!(!text.contains("Ctrl-s save"), "{text:?}");
+    }
+
+    #[test]
+    fn feed_filter_prompt_and_title_render() {
+        let mut app = test_app();
+        app.focus = Focus::Feeds;
+        app.mode = Mode::Search {
+            input: "rust".to_string(),
+            scope: SearchScope::Feeds,
+        };
+
+        let text = render_text(&mut app, 80, 24);
+        assert!(text.contains("Feeds: rust"), "{text:?}");
+
+        app.mode = Mode::Normal;
+        app.feed_filter = "rust".to_string();
+
+        let text = render_text(&mut app, 80, 24);
+        assert!(text.contains("/rust"), "{text:?}");
     }
 }
