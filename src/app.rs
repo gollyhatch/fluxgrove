@@ -1231,38 +1231,11 @@ impl App {
             },
         );
         if read {
-            if self.hide_read_entries {
-                // The filter is active, so a read entry no longer belongs in
-                // the list. Removing it leaves the cursor on the next entry.
-                self.remove_entry_at(self.entry_cursor);
-            } else {
-                // Marking read is a reading-flow action: keep the cursor
-                // moving through the list instead of leaving it on the entry
-                // just read.
-                self.move_entry(1);
-            }
+            // Marking read is a reading-flow action: keep the entry in the
+            // list and move on to the next one. The entry only disappears on
+            // the next reload when read entries are filtered out.
+            self.move_entry(1);
         }
-    }
-
-    fn remove_entry_at(&mut self, index: usize) {
-        if index >= self.entries.len() {
-            return;
-        }
-        self.entries.remove(index);
-        if let Some(total) = self.total_entries.as_mut() {
-            *total = (*total - 1).max(0);
-        }
-
-        if self.entries.is_empty() {
-            self.entry_cursor = 0;
-            self.entry_state.select(None);
-        } else {
-            self.entry_cursor = self.entry_cursor.min(self.entries.len() - 1);
-            self.entry_state.select(Some(self.entry_cursor));
-        }
-        self.article_scroll = 0;
-        self.ensure_article();
-        self.dirty = true;
     }
 
     /// The API scope that covers every entry in the current view.
@@ -1987,12 +1960,13 @@ mod tests {
 
         press(&mut app, KeyCode::Char('m'));
 
-        assert_eq!(app.entry_cursor, 1);
+        assert_eq!(app.entries.len(), 2);
         assert_eq!(app.entries[0].status, EntryStatus::Read);
+        assert_eq!(app.entry_cursor, 1);
     }
 
     #[test]
-    fn marking_read_removes_the_entry_when_read_entries_are_hidden() {
+    fn marking_read_keeps_the_entry_when_read_entries_are_hidden() {
         let (mut app, _rx) = test_app();
         app.hide_read_entries = true;
         app.entries =
@@ -2004,26 +1978,10 @@ mod tests {
 
         press(&mut app, KeyCode::Char('m'));
 
-        assert_eq!(app.entries.len(), 1);
-        assert_eq!(app.entries[0].id, EntryID(2));
-        assert_eq!(app.entry_cursor, 0);
-        assert_eq!(app.total_entries, Some(1));
-    }
-
-    #[test]
-    fn marking_read_keeps_the_entry_when_read_entries_are_visible() {
-        let (mut app, _rx) = test_app();
-        app.hide_read_entries = false;
-        app.entries =
-            vec![render_entry(1, "unread"), render_entry(2, "unread")];
-        app.entry_cursor = 0;
-        app.focus = Focus::Entries;
-
-        press(&mut app, KeyCode::Char('m'));
-
         assert_eq!(app.entries.len(), 2);
         assert_eq!(app.entries[0].status, EntryStatus::Read);
         assert_eq!(app.entry_cursor, 1);
+        assert_eq!(app.total_entries, Some(2));
     }
 
     #[test]

@@ -120,7 +120,7 @@ make it stick.
 
 | Key | Action |
 | --- | --- |
-| `m` | Toggle read / unread (marks read, advances, and removes the entry when read articles are hidden) |
+| `m` | Toggle read / unread (marking read advances to the next entry) |
 | `M` | Mark every entry in the current view as read |
 | `J` / `K` | Next / previous article while the reader is focused; marks it read |
 | `s` | Toggle star / bookmark |
