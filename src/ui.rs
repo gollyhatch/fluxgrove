@@ -1512,7 +1512,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::{
-        app::{FeedField, FeedForm, Mode},
+        app::{FeedField, FeedForm, Mode, Selection},
         config::{Auth, Config},
     };
     use miniflux_api::models::{
@@ -1671,6 +1671,7 @@ mod tests {
                 input: "rust".to_string(),
                 scope: SearchScope::Feeds,
                 original: String::new(),
+                original_selection: Selection::Unread,
             },
         ];
         for mode in modes {
@@ -1874,6 +1875,7 @@ mod tests {
             input: "rust".to_string(),
             scope: SearchScope::Feeds,
             original: String::new(),
+            original_selection: Selection::Unread,
         };
 
         let text = render_text(&mut app, 80, 24);
