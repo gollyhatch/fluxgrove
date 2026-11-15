@@ -31,7 +31,7 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
   focused panel; set both defaults in the config.
 - Subscribe with `n` by entering a website URL; feeds are detected automatically
   and you can choose one when several are found.
-- Edit the feed of the selected entry with `e`, covering every option the Miniflux API exposes:
+- Edit the feed of the selected entry with `E`, covering every option the Miniflux API exposes:
   title, category, feed and site URLs, scraper / rewrite / block / keep rules,
   crawler, HTTP authentication, user agent, disabled, HTTP cache and proxy flags.
 - Jump from an entry to its feed with `p`, as if the feed were selected in the
@@ -112,7 +112,7 @@ make it stick.
 | `1` / `2` / `3` | Focus feeds / entries / reader |
 | `g` / `G` | Jump to top / bottom |
 | `n` | Subscribe by website URL (feeds are detected automatically) |
-| `e` | Edit the feed of the selected entry, or the selected feed (all Miniflux options) |
+| `E` | Edit the feed of the selected entry, or the selected feed (all Miniflux options) |
 | `p` | Jump to the feed of the selected entry and show its entries |
 | `f` in Feeds | Hide / show feeds without unread items |
 | `f` in Entries | Hide / show read articles |

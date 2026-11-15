@@ -705,7 +705,7 @@ impl App {
             },
             KeyCode::Char('m') => self.toggle_read(),
             KeyCode::Char('M') => self.mark_view_read(),
-            KeyCode::Char('e') => self.edit_selected_feed(),
+            KeyCode::Char('E') => self.edit_selected_feed(),
             KeyCode::Char('p') => self.jump_to_entry_feed(),
             KeyCode::Char('s') => self.toggle_star(),
             KeyCode::Char('J') if self.focus == Focus::Article => {
@@ -1167,7 +1167,7 @@ impl App {
     }
 
     fn edit_selected_feed(&mut self) {
-        // The selected entry wins, so `e` works from any view. Fall back to a
+        // The selected entry wins, so `E` works from any view. Fall back to a
         // feed row when the entries pane is empty.
         let feed_id = self.selected_entry().map(|entry| entry.feed_id).or(
             match self.selection {
@@ -2852,10 +2852,10 @@ mod tests {
     }
 
     #[test]
-    fn e_opens_the_editor_for_the_selected_feed() {
+    fn uppercase_e_opens_the_editor_for_the_selected_feed() {
         let (mut app, _rx) = test_app_with_feed();
 
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
 
         match &app.mode {
             Mode::EditFeed { feed_id, form, .. } => {
@@ -2870,14 +2870,14 @@ mod tests {
     }
 
     #[test]
-    fn e_opens_the_editor_for_the_selected_entry_feed() {
+    fn uppercase_e_opens_the_editor_for_the_selected_entry_feed() {
         let (mut app, _rx) = test_app_with_feed();
         app.selection = Selection::Starred;
         app.entries = vec![render_entry(42, "unread")];
         app.entry_cursor = 0;
         app.focus = Focus::Entries;
 
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
 
         match &app.mode {
             Mode::EditFeed { feed_id, form, .. } => {
@@ -2889,14 +2889,14 @@ mod tests {
     }
 
     #[test]
-    fn e_with_an_entry_from_an_unknown_feed_shows_a_warning() {
+    fn uppercase_e_with_an_entry_from_an_unknown_feed_shows_a_warning() {
         let (mut app, _rx) = test_app();
         app.selection = Selection::Unread;
         app.entries = vec![render_entry(42, "unread")];
         app.entry_cursor = 0;
         app.focus = Focus::Entries;
 
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
 
         assert!(matches!(app.mode, Mode::Normal));
     }
@@ -2972,10 +2972,19 @@ mod tests {
     }
 
     #[test]
-    fn e_without_a_feed_selection_shows_a_warning() {
-        let (mut app, _rx) = test_app();
+    fn lowercase_e_does_not_open_the_feed_editor() {
+        let (mut app, _rx) = test_app_with_feed();
 
         press(&mut app, KeyCode::Char('e'));
+
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn uppercase_e_without_a_target_shows_a_warning() {
+        let (mut app, _rx) = test_app();
+
+        press(&mut app, KeyCode::Char('E'));
 
         assert!(matches!(app.mode, Mode::Normal));
     }
@@ -2984,7 +2993,7 @@ mod tests {
     fn feed_editor_opens_a_category_picker() {
         let (mut app, mut rx) = test_app_with_feed();
         let _ = rx.try_recv(); // initial Bootstrap
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
         press(&mut app, KeyCode::Char('j')); // Category
         press(&mut app, KeyCode::Enter);
 
@@ -3019,7 +3028,7 @@ mod tests {
     fn feed_editor_category_picker_cancels() {
         let (mut app, mut rx) = test_app_with_feed();
         let _ = rx.try_recv(); // initial Bootstrap
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Char('j'));
@@ -3042,7 +3051,7 @@ mod tests {
     fn feed_editor_category_ignores_h_and_l() {
         let (mut app, mut rx) = test_app_with_feed();
         let _ = rx.try_recv(); // initial Bootstrap
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
         press(&mut app, KeyCode::Char('j'));
 
         press(&mut app, KeyCode::Char('l'));
@@ -3064,7 +3073,7 @@ mod tests {
     fn feed_editor_toggles_booleans_with_enter_and_h_l() {
         let (mut app, mut rx) = test_app_with_feed();
         let _ = rx.try_recv(); // initial Bootstrap
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
 
         press(&mut app, KeyCode::Char('G'));
         press(&mut app, KeyCode::Char('l'));
@@ -3096,7 +3105,7 @@ mod tests {
     fn feed_editor_edits_text_and_saves_every_option() {
         let (mut app, mut rx) = test_app_with_feed();
         let _ = rx.try_recv(); // initial Bootstrap
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
 
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::EditFeed { editing: true, .. }));
@@ -3126,7 +3135,7 @@ mod tests {
     fn feed_editor_escape_cancels_without_saving() {
         let (mut app, mut rx) = test_app_with_feed();
         let _ = rx.try_recv(); // initial Bootstrap
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
 
         press(&mut app, KeyCode::Esc);
 
@@ -3137,7 +3146,7 @@ mod tests {
     #[test]
     fn feed_updated_replaces_the_feed_and_closes_the_editor() {
         let (mut app, _rx) = test_app_with_feed();
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
 
         app.handle_api(ApiEvent::FeedUpdated(Box::new(render_feed(
             7, "Renamed", 1,
@@ -3150,7 +3159,7 @@ mod tests {
     #[test]
     fn feed_update_error_keeps_the_editor_open() {
         let (mut app, _rx) = test_app_with_feed();
-        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('E'));
 
         app.handle_api(ApiEvent::Error {
             context: "Could not update the feed".to_string(),

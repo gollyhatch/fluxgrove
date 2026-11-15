@@ -794,7 +794,7 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
                 ("j/k", "select"),
                 ("l", "entries"),
                 ("n", "new feed"),
-                ("e", "edit feed"),
+                ("E", "edit feed"),
                 (
                     "f",
                     if app.hide_read_feeds {
@@ -998,7 +998,7 @@ fn help_rows() -> Vec<HelpRow> {
         Key("1 / 2 / 3", "focus feeds / entries / reader"),
         Key("g / G", "go to top / bottom"),
         Key("n", "subscribe to a website (feeds are detected)"),
-        Key("e", "edit the selected feed"),
+        Key("E", "edit the selected feed"),
         Key("f (Feeds)", "hide / show feeds without unread entries"),
         Key("f (Entries)", "hide / show read articles"),
         Key("Ctrl-d / Ctrl-u", "half page down / up"),
