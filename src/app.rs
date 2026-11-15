@@ -74,6 +74,192 @@ impl SidebarRow {
     }
 }
 
+/// One editable property of a feed, in the order the editor shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedField {
+    Title,
+    Category,
+    FeedUrl,
+    SiteUrl,
+    UserAgent,
+    Username,
+    Password,
+    ScraperRules,
+    RewriteRules,
+    BlocklistRules,
+    KeeplistRules,
+    Crawler,
+    Disabled,
+    IgnoreHttpCache,
+    FetchViaProxy,
+}
+
+impl FeedField {
+    pub const ALL: [Self; 15] = [
+        Self::Title,
+        Self::Category,
+        Self::FeedUrl,
+        Self::SiteUrl,
+        Self::UserAgent,
+        Self::Username,
+        Self::Password,
+        Self::ScraperRules,
+        Self::RewriteRules,
+        Self::BlocklistRules,
+        Self::KeeplistRules,
+        Self::Crawler,
+        Self::Disabled,
+        Self::IgnoreHttpCache,
+        Self::FetchViaProxy,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Title => "Title",
+            Self::Category => "Category",
+            Self::FeedUrl => "Feed URL",
+            Self::SiteUrl => "Site URL",
+            Self::UserAgent => "User agent",
+            Self::Username => "Username",
+            Self::Password => "Password",
+            Self::ScraperRules => "Scraper rules",
+            Self::RewriteRules => "Rewrite rules",
+            Self::BlocklistRules => "Blocklist rules",
+            Self::KeeplistRules => "Keeplist rules",
+            Self::Crawler => "Crawler",
+            Self::Disabled => "Disabled",
+            Self::IgnoreHttpCache => "Ignore HTTP cache",
+            Self::FetchViaProxy => "Fetch via proxy",
+        }
+    }
+
+    pub fn is_toggle(self) -> bool {
+        matches!(
+            self,
+            Self::Crawler
+                | Self::Disabled
+                | Self::IgnoreHttpCache
+                | Self::FetchViaProxy
+        )
+    }
+}
+
+/// The editable copy of a feed shown by the editor.
+#[derive(Clone, Debug)]
+pub struct FeedForm {
+    pub title: String,
+    pub category_id: CategoryID,
+    pub feed_url: String,
+    pub site_url: String,
+    pub user_agent: String,
+    pub username: String,
+    pub password: String,
+    pub scraper_rules: String,
+    pub rewrite_rules: String,
+    pub blocklist_rules: String,
+    pub keeplist_rules: String,
+    pub crawler: bool,
+    pub disabled: bool,
+    pub ignore_http_cache: bool,
+    pub fetch_via_proxy: bool,
+}
+
+impl FeedForm {
+    fn from_feed(feed: &Feed) -> Self {
+        Self {
+            title: feed.title.clone(),
+            category_id: feed.category.id,
+            feed_url: feed.feed_url.clone(),
+            site_url: feed.site_url.clone(),
+            user_agent: feed.user_agent.clone(),
+            username: feed.username.clone(),
+            password: feed.password.clone(),
+            scraper_rules: feed.scraper_rules.clone(),
+            rewrite_rules: feed.rewrite_rules.clone(),
+            blocklist_rules: feed.blocklist_rules.clone(),
+            keeplist_rules: feed.keeplist_rules.clone(),
+            crawler: feed.crawler,
+            disabled: feed.disabled,
+            ignore_http_cache: feed.ignore_http_cache,
+            fetch_via_proxy: feed.fetch_via_proxy,
+        }
+    }
+
+    pub fn text(&self, field: FeedField) -> Option<&str> {
+        match field {
+            FeedField::Title => Some(&self.title),
+            FeedField::FeedUrl => Some(&self.feed_url),
+            FeedField::SiteUrl => Some(&self.site_url),
+            FeedField::UserAgent => Some(&self.user_agent),
+            FeedField::Username => Some(&self.username),
+            FeedField::Password => Some(&self.password),
+            FeedField::ScraperRules => Some(&self.scraper_rules),
+            FeedField::RewriteRules => Some(&self.rewrite_rules),
+            FeedField::BlocklistRules => Some(&self.blocklist_rules),
+            FeedField::KeeplistRules => Some(&self.keeplist_rules),
+            FeedField::Category
+            | FeedField::Crawler
+            | FeedField::Disabled
+            | FeedField::IgnoreHttpCache
+            | FeedField::FetchViaProxy => None,
+        }
+    }
+
+    fn text_mut(&mut self, field: FeedField) -> Option<&mut String> {
+        match field {
+            FeedField::Title => Some(&mut self.title),
+            FeedField::FeedUrl => Some(&mut self.feed_url),
+            FeedField::SiteUrl => Some(&mut self.site_url),
+            FeedField::UserAgent => Some(&mut self.user_agent),
+            FeedField::Username => Some(&mut self.username),
+            FeedField::Password => Some(&mut self.password),
+            FeedField::ScraperRules => Some(&mut self.scraper_rules),
+            FeedField::RewriteRules => Some(&mut self.rewrite_rules),
+            FeedField::BlocklistRules => Some(&mut self.blocklist_rules),
+            FeedField::KeeplistRules => Some(&mut self.keeplist_rules),
+            FeedField::Category
+            | FeedField::Crawler
+            | FeedField::Disabled
+            | FeedField::IgnoreHttpCache
+            | FeedField::FetchViaProxy => None,
+        }
+    }
+
+    fn toggle(&mut self, field: FeedField) {
+        match field {
+            FeedField::Crawler => self.crawler = !self.crawler,
+            FeedField::Disabled => self.disabled = !self.disabled,
+            FeedField::IgnoreHttpCache => {
+                self.ignore_http_cache = !self.ignore_http_cache;
+            }
+            FeedField::FetchViaProxy => {
+                self.fetch_via_proxy = !self.fetch_via_proxy;
+            }
+            _ => {}
+        }
+    }
+
+    fn update(&self) -> api::FeedUpdate {
+        api::FeedUpdate {
+            title: self.title.clone(),
+            category_id: self.category_id,
+            feed_url: self.feed_url.clone(),
+            site_url: self.site_url.clone(),
+            user_agent: self.user_agent.clone(),
+            username: self.username.clone(),
+            password: self.password.clone(),
+            scraper_rules: self.scraper_rules.clone(),
+            rewrite_rules: self.rewrite_rules.clone(),
+            blocklist_rules: self.blocklist_rules.clone(),
+            keeplist_rules: self.keeplist_rules.clone(),
+            crawler: self.crawler,
+            disabled: self.disabled,
+            ignore_http_cache: self.ignore_http_cache,
+            fetch_via_proxy: self.fetch_via_proxy,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ConfirmAction {
     MarkAllRead(MarkAllScope),
@@ -104,6 +290,12 @@ pub enum Mode {
     ThemePicker {
         cursor: usize,
         original: String,
+    },
+    EditFeed {
+        feed_id: FeedID,
+        form: Box<FeedForm>,
+        cursor: usize,
+        editing: bool,
     },
 }
 
@@ -439,6 +631,14 @@ impl App {
                     Mode::ThemePicker { cursor, original } => {
                         self.handle_theme_picker(key, cursor, original)
                     }
+                    Mode::EditFeed {
+                        feed_id,
+                        form,
+                        cursor,
+                        editing,
+                    } => self.handle_feed_editor(
+                        key, feed_id, form, cursor, editing,
+                    ),
                 }
             }
             Event::Resize(_, _) => self.dirty = true,
@@ -498,6 +698,7 @@ impl App {
             },
             KeyCode::Char('m') => self.toggle_read(),
             KeyCode::Char('M') => self.mark_view_read(),
+            KeyCode::Char('e') => self.edit_selected_feed(),
             KeyCode::Char('s') => self.toggle_star(),
             KeyCode::Char('J') if self.focus == Focus::Article => {
                 self.open_relative_article(1);
@@ -955,6 +1156,183 @@ impl App {
             cursor,
             original: self.theme_id.clone(),
         };
+    }
+
+    fn edit_selected_feed(&mut self) {
+        let Selection::Feed(id) = self.selection else {
+            self.set_status(StatusKind::Warning, "Select a feed to edit");
+            return;
+        };
+        let Some(feed) = self.feeds.iter().find(|feed| feed.id == id) else {
+            self.set_status(StatusKind::Warning, "Feed is no longer available");
+            return;
+        };
+        self.mode = Mode::EditFeed {
+            feed_id: id,
+            form: Box::new(FeedForm::from_feed(feed)),
+            cursor: 0,
+            editing: false,
+        };
+        self.set_status(StatusKind::Info, "Editing the feed; Ctrl-s saves");
+    }
+
+    fn handle_feed_editor(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        feed_id: FeedID,
+        mut form: Box<FeedForm>,
+        mut cursor: usize,
+        mut editing: bool,
+    ) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let last = FeedField::ALL.len() - 1;
+        cursor = cursor.min(last);
+        let field = FeedField::ALL[cursor];
+
+        if editing {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => editing = false,
+                KeyCode::Backspace => {
+                    if let Some(text) = form.text_mut(field) {
+                        text.pop();
+                    }
+                }
+                KeyCode::Char('u')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(text) = form.text_mut(field) {
+                        text.clear();
+                    }
+                }
+                KeyCode::Char('w')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(text) = form.text_mut(field) {
+                        while text.ends_with(' ') {
+                            text.pop();
+                        }
+                        while let Some(ch) = text.pop() {
+                            if ch == ' ' {
+                                break;
+                            }
+                        }
+                    }
+                }
+                KeyCode::Char(ch)
+                    if !key.modifiers.intersects(
+                        KeyModifiers::CONTROL
+                            | KeyModifiers::ALT
+                            | KeyModifiers::SUPER,
+                    ) =>
+                {
+                    if let Some(text) = form.text_mut(field) {
+                        text.push(ch);
+                    }
+                }
+                _ => {}
+            }
+            self.mode = Mode::EditFeed {
+                feed_id,
+                form,
+                cursor,
+                editing,
+            };
+            self.dirty = true;
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.set_status(StatusKind::Info, "Feed edit cancelled");
+                return;
+            }
+            KeyCode::Char('s')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.save_feed(feed_id, &form);
+            }
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => {
+                cursor = (cursor + 1).min(last);
+            }
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => {
+                cursor = cursor.saturating_sub(1);
+            }
+            KeyCode::Char('g') => cursor = 0,
+            KeyCode::Char('G') => cursor = last,
+            KeyCode::Enter => match field {
+                FeedField::Category => {
+                    form.category_id =
+                        self.cycle_category(form.category_id, true);
+                }
+                _ if field.is_toggle() => form.toggle(field),
+                _ => editing = true,
+            },
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.adjust_feed_field(&mut form, field, false);
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.adjust_feed_field(&mut form, field, true);
+            }
+            _ => {}
+        }
+
+        self.mode = Mode::EditFeed {
+            feed_id,
+            form,
+            cursor,
+            editing,
+        };
+        self.dirty = true;
+    }
+
+    fn adjust_feed_field(
+        &self,
+        form: &mut FeedForm,
+        field: FeedField,
+        forward: bool,
+    ) {
+        match field {
+            FeedField::Category => {
+                form.category_id =
+                    self.cycle_category(form.category_id, forward);
+            }
+            FeedField::Crawler => form.crawler = forward,
+            FeedField::Disabled => form.disabled = forward,
+            FeedField::IgnoreHttpCache => form.ignore_http_cache = forward,
+            FeedField::FetchViaProxy => form.fetch_via_proxy = forward,
+            _ => {}
+        }
+    }
+
+    fn cycle_category(&self, current: CategoryID, forward: bool) -> CategoryID {
+        let mut categories: Vec<&Category> = self.categories.iter().collect();
+        categories.sort_by_key(|category| category.title.to_lowercase());
+        if categories.is_empty() {
+            return current;
+        }
+        let Some(index) = categories
+            .iter()
+            .position(|category| category.id == current)
+        else {
+            return categories[0].id;
+        };
+        let count = categories.len();
+        let next = if forward {
+            (index + 1) % count
+        } else {
+            (index + count - 1) % count
+        };
+        categories[next].id
+    }
+
+    fn save_feed(&mut self, feed_id: FeedID, form: &FeedForm) {
+        self.set_status(StatusKind::Info, "Saving feed…");
+        self.send(ApiCommand::UpdateFeed {
+            id: feed_id,
+            changes: Box::new(form.update()),
+        });
     }
 
     // ── Navigation ───────────────────────────────────────────────────
@@ -1548,6 +1926,26 @@ impl App {
                     "Fetched original content",
                 );
             }
+            ApiEvent::FeedUpdated(feed) => {
+                let id = feed.id;
+                let title = feed.title.clone();
+                if let Some(existing) =
+                    self.feeds.iter_mut().find(|feed| feed.id == id)
+                {
+                    *existing = *feed;
+                }
+                if matches!(
+                    &self.mode,
+                    Mode::EditFeed { feed_id, .. } if *feed_id == id
+                ) {
+                    self.mode = Mode::Normal;
+                }
+                self.sync_sidebar_cursor();
+                self.set_status(
+                    StatusKind::Success,
+                    format!("Updated “{title}”"),
+                );
+            }
             ApiEvent::MarkedAllRead => {
                 self.loading = true;
                 self.set_status(
@@ -1794,6 +2192,23 @@ mod tests {
             }
         }))
         .expect("valid test entry")
+    }
+
+    fn test_app_with_feed()
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<ApiCommand>) {
+        let (mut app, rx) = test_app();
+        app.categories =
+            vec![render_category(1, "News"), render_category(2, "Tech")];
+        app.feeds = vec![render_feed(7, "Example", 1)];
+        app.selection = Selection::Feed(FeedID(7));
+        app.focus = Focus::Feeds;
+        (app, rx)
+    }
+
+    fn press_with(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            code, modifiers,
+        )));
     }
 
     fn press(app: &mut App, code: KeyCode) {
@@ -2353,5 +2768,142 @@ mod tests {
 
         press(&mut app, KeyCode::Char('J'));
         assert_eq!(app.entry_cursor, 0);
+    }
+
+    #[test]
+    fn e_opens_the_editor_for_the_selected_feed() {
+        let (mut app, _rx) = test_app_with_feed();
+
+        press(&mut app, KeyCode::Char('e'));
+
+        match &app.mode {
+            Mode::EditFeed { feed_id, form, .. } => {
+                assert_eq!(*feed_id, FeedID(7));
+                assert_eq!(form.title, "Example");
+                assert_eq!(form.feed_url, "https://example.com/feed.xml");
+                assert_eq!(form.site_url, "https://example.com");
+                assert_eq!(form.category_id, CategoryID(1));
+            }
+            other => panic!("expected the feed editor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn e_without_a_feed_selection_shows_a_warning() {
+        let (mut app, _rx) = test_app();
+
+        press(&mut app, KeyCode::Char('e'));
+
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn feed_editor_toggles_booleans_and_cycles_categories() {
+        let (mut app, _rx) = test_app_with_feed();
+        press(&mut app, KeyCode::Char('e'));
+
+        // Category: Enter moves to the next category in title order.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        let form = match &app.mode {
+            Mode::EditFeed { form, .. } => form,
+            other => panic!("expected the feed editor, got {other:?}"),
+        };
+        assert_eq!(form.category_id, CategoryID(2));
+
+        // h/l set booleans explicitly.
+        press(&mut app, KeyCode::Char('G'));
+        press(&mut app, KeyCode::Char('l'));
+        let form = match &app.mode {
+            Mode::EditFeed { form, cursor, .. } => {
+                assert_eq!(*cursor, FeedField::ALL.len() - 1);
+                form
+            }
+            other => panic!("expected the feed editor, got {other:?}"),
+        };
+        assert!(form.fetch_via_proxy);
+
+        press(&mut app, KeyCode::Char('h'));
+        let form = match &app.mode {
+            Mode::EditFeed { form, .. } => form,
+            other => panic!("expected the feed editor, got {other:?}"),
+        };
+        assert!(!form.fetch_via_proxy);
+
+        // Enter toggles a boolean.
+        press(&mut app, KeyCode::Enter);
+        let form = match &app.mode {
+            Mode::EditFeed { form, .. } => form,
+            other => panic!("expected the feed editor, got {other:?}"),
+        };
+        assert!(form.fetch_via_proxy);
+    }
+
+    #[test]
+    fn feed_editor_edits_text_and_saves_every_option() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        press(&mut app, KeyCode::Char('e'));
+
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::EditFeed { editing: true, .. }));
+        press_with(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        for ch in "Fresh title".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        press_with(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+
+        let command = rx.try_recv().expect("update-feed command");
+        let ApiCommand::UpdateFeed { id, changes } = command else {
+            panic!("expected an update-feed command");
+        };
+        assert_eq!(id, FeedID(7));
+        assert_eq!(changes.title, "Fresh title");
+        assert_eq!(changes.category_id, CategoryID(1));
+        assert_eq!(changes.feed_url, "https://example.com/feed.xml");
+        assert_eq!(changes.site_url, "https://example.com");
+        assert!(!changes.crawler);
+        assert!(!changes.disabled);
+        assert!(!changes.ignore_http_cache);
+        assert!(!changes.fetch_via_proxy);
+    }
+
+    #[test]
+    fn feed_editor_escape_cancels_without_saving() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        press(&mut app, KeyCode::Char('e'));
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn feed_updated_replaces_the_feed_and_closes_the_editor() {
+        let (mut app, _rx) = test_app_with_feed();
+        press(&mut app, KeyCode::Char('e'));
+
+        app.handle_api(ApiEvent::FeedUpdated(Box::new(render_feed(
+            7, "Renamed", 1,
+        ))));
+
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.feeds[0].title, "Renamed");
+    }
+
+    #[test]
+    fn feed_update_error_keeps_the_editor_open() {
+        let (mut app, _rx) = test_app_with_feed();
+        press(&mut app, KeyCode::Char('e'));
+
+        app.handle_api(ApiEvent::Error {
+            context: "Could not update the feed".to_string(),
+            message: "HTTP 400".to_string(),
+        });
+
+        assert!(matches!(app.mode, Mode::EditFeed { .. }));
     }
 }

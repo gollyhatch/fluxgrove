@@ -9,6 +9,7 @@ use miniflux_api::{
     },
 };
 use reqwest::Client;
+use serde::Serialize;
 use tokio::sync::mpsc;
 use url::Url;
 
@@ -20,6 +21,29 @@ pub struct BootstrapData {
     pub categories: Vec<Category>,
     pub counters: FeedCounters,
     pub user_id: UserID,
+}
+
+/// Every field `PUT /v1/feeds/{id}` accepts.
+///
+/// The `miniflux_api` crate models only a subset, so the request body is built
+/// here to cover the block/keep lists, the HTTP cache and proxy flags too.
+#[derive(Debug, Clone, Serialize)]
+pub struct FeedUpdate {
+    pub title: String,
+    pub category_id: CategoryID,
+    pub feed_url: String,
+    pub site_url: String,
+    pub user_agent: String,
+    pub username: String,
+    pub password: String,
+    pub scraper_rules: String,
+    pub rewrite_rules: String,
+    pub blocklist_rules: String,
+    pub keeplist_rules: String,
+    pub crawler: bool,
+    pub disabled: bool,
+    pub ignore_http_cache: bool,
+    pub fetch_via_proxy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +82,10 @@ pub enum ApiCommand {
         url: Url,
         category_id: CategoryID,
     },
+    UpdateFeed {
+        id: FeedID,
+        changes: Box<FeedUpdate>,
+    },
     MarkAllRead {
         scope: MarkAllScope,
     },
@@ -94,6 +122,7 @@ pub enum ApiEvent {
     FeedCreated {
         feed_id: FeedID,
     },
+    FeedUpdated(Box<Feed>),
     MarkedAllRead,
     Error {
         context: String,
@@ -105,6 +134,8 @@ pub enum ApiEvent {
 pub struct ApiClient {
     api: MinifluxApi,
     http: Client,
+    base_url: Url,
+    auth: Auth,
 }
 
 impl ApiClient {
@@ -128,7 +159,42 @@ impl ApiClient {
             .build()
             .context("could not create the HTTP client")?;
 
-        Ok(Self { api, http })
+        Ok(Self {
+            api,
+            http,
+            base_url: config.url.clone(),
+            auth: config.auth.clone(),
+        })
+    }
+
+    /// Update a feed with the full set of options Miniflux accepts.
+    ///
+    /// `MinifluxApi::update_feed` cannot express every field, so this sends the
+    /// documented payload with the same authentication the crate uses.
+    async fn update_feed(
+        &self,
+        id: FeedID,
+        changes: &FeedUpdate,
+    ) -> Result<Feed> {
+        let url = self.base_url.join(&format!("v1/feeds/{id}"))?;
+        let request = self.http.put(url).json(changes);
+        let request = match &self.auth {
+            Auth::Token(token) => request.header("X-Auth-Token", token),
+            Auth::Password { username, password } => {
+                request.basic_auth(username, Some(password))
+            }
+        };
+        let response =
+            request.send().await.context("could not reach Miniflux")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Miniflux error (HTTP {status}): {}", body.trim());
+        }
+        response
+            .json::<Feed>()
+            .await
+            .context("could not read the updated feed")
     }
 
     async fn bootstrap(&self) -> Result<BootstrapData> {
@@ -258,6 +324,16 @@ impl ApiClient {
                             "Could not subscribe to the feed",
                             error,
                         );
+                    }
+                }
+            }
+            ApiCommand::UpdateFeed { id, changes } => {
+                match self.update_feed(id, &changes).await {
+                    Ok(feed) => {
+                        send(events, ApiEvent::FeedUpdated(Box::new(feed)))
+                    }
+                    Err(error) => {
+                        send_error(events, "Could not update the feed", error);
                     }
                 }
             }
@@ -535,6 +611,160 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert!(requests[0].starts_with("PUT /v1/entries/42/bookmark "));
         assert!(requests[1].starts_with("GET /v1/entries/42 "));
+    }
+
+    async fn read_http_request(
+        socket: &mut tokio::net::TcpStream,
+    ) -> (String, String) {
+        let mut data = Vec::new();
+        let mut chunk = [0u8; 2048];
+        let header_end = loop {
+            let read = socket.read(&mut chunk).await.expect("read request");
+            assert!(read > 0, "connection closed before the headers");
+            data.extend_from_slice(&chunk[..read]);
+            if let Some(index) =
+                data.windows(4).position(|window| window == b"\r\n\r\n")
+            {
+                break index + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&data[..header_end]).to_string();
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0);
+        while data.len() < header_end + length {
+            let read = socket.read(&mut chunk).await.expect("read body");
+            assert!(read > 0, "connection closed before the body");
+            data.extend_from_slice(&chunk[..read]);
+        }
+        let body =
+            String::from_utf8_lossy(&data[header_end..header_end + length])
+                .to_string();
+        (headers, body)
+    }
+
+    fn feed_json(title: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": 42,
+            "user_id": 1,
+            "title": title,
+            "site_url": "https://example.com",
+            "feed_url": "https://example.com/feed.xml",
+            "category": {"id": 3, "user_id": 1, "title": "Category"}
+        })
+    }
+
+    async fn serve_feed_update(
+        listener: TcpListener,
+        response: serde_json::Value,
+    ) -> (String, Option<String>, String) {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let (headers, body) = read_http_request(&mut socket).await;
+        let request_line =
+            headers.lines().next().unwrap_or_default().to_string();
+        let token = headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-auth-token")
+                .then(|| value.trim().to_string())
+        });
+        let body_out = response.to_string();
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body_out.len(),
+            body_out
+        );
+        socket
+            .write_all(reply.as_bytes())
+            .await
+            .expect("write response");
+        (request_line, token, body)
+    }
+
+    #[tokio::test]
+    async fn updating_a_feed_sends_every_option() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let server =
+            tokio::spawn(serve_feed_update(listener, feed_json("Updated")));
+
+        let client =
+            ApiClient::new(&test_config(&format!("http://{address}/")))
+                .expect("api client");
+        let changes = FeedUpdate {
+            title: "Renamed".to_string(),
+            category_id: CategoryID(3),
+            feed_url: "https://example.com/feed.xml".to_string(),
+            site_url: "https://example.com".to_string(),
+            user_agent: "fluxgrove".to_string(),
+            username: "user".to_string(),
+            password: "secret".to_string(),
+            scraper_rules: "article".to_string(),
+            rewrite_rules: "replace".to_string(),
+            blocklist_rules: "block-me".to_string(),
+            keeplist_rules: "keep-me".to_string(),
+            crawler: true,
+            disabled: true,
+            ignore_http_cache: true,
+            fetch_via_proxy: true,
+        };
+        let (events, mut received) = mpsc::unbounded_channel();
+        client
+            .run(
+                ApiCommand::UpdateFeed {
+                    id: FeedID(42),
+                    changes: Box::new(changes),
+                },
+                &events,
+            )
+            .await;
+
+        let event = received.recv().await.expect("an event");
+        assert!(
+            matches!(&event, ApiEvent::FeedUpdated(feed) if feed.title == "Updated"),
+            "unexpected event: {event:?}"
+        );
+
+        let (request_line, token, body) =
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("server finished")
+                .expect("server task");
+        assert_eq!(request_line, "PUT /v1/feeds/42 HTTP/1.1");
+        assert_eq!(token.as_deref(), Some("test-token"));
+        let payload: serde_json::Value =
+            serde_json::from_str(&body).expect("JSON request body");
+        for field in [
+            "title",
+            "category_id",
+            "feed_url",
+            "site_url",
+            "user_agent",
+            "username",
+            "password",
+            "scraper_rules",
+            "rewrite_rules",
+            "blocklist_rules",
+            "keeplist_rules",
+            "crawler",
+            "disabled",
+            "ignore_http_cache",
+            "fetch_via_proxy",
+        ] {
+            assert!(payload.get(field).is_some(), "missing {field}: {body}");
+        }
+        assert_eq!(payload["category_id"], 3);
+        assert_eq!(payload["blocklist_rules"], "block-me");
+        assert_eq!(payload["keeplist_rules"], "keep-me");
+        assert_eq!(payload["ignore_http_cache"], true);
+        assert_eq!(payload["fetch_via_proxy"], true);
     }
 
     #[test]

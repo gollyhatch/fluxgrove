@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, Focus, Mode, SidebarRow, StatusKind},
+    app::{App, FeedField, FeedForm, Focus, Mode, SidebarRow, StatusKind},
     util,
 };
 
@@ -143,6 +143,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if matches!(app.mode, Mode::FeedPicker { .. }) {
         draw_feed_picker(frame, app, area, &pal);
+    }
+    if matches!(app.mode, Mode::EditFeed { .. }) {
+        // Keep the status line and key bar visible while editing.
+        draw_feed_editor(frame, app, rows[1], &pal);
     }
 }
 
@@ -707,6 +711,24 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     );
 }
 
+/// The tail of `text` that fits `width` columns, for appending input.
+fn fit_tail(text: &str, width: usize) -> String {
+    if util::display_width(text) <= width {
+        return text.to_string();
+    }
+    let mut result = String::new();
+    let mut used = 0;
+    for ch in text.chars().rev() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > width {
+            break;
+        }
+        result.insert(0, ch);
+        used += ch_width;
+    }
+    result
+}
+
 fn draw_input_prompt(
     frame: &mut Frame,
     area: Rect,
@@ -716,22 +738,7 @@ fn draw_input_prompt(
 ) {
     let prefix_width = util::display_width(prefix);
     let available = (area.width as usize).saturating_sub(prefix_width + 1);
-    let shown = if util::display_width(input) <= available {
-        input.to_string()
-    } else {
-        let mut result = String::new();
-        let mut width = 0;
-        for ch in input.chars().rev() {
-            let ch_width =
-                unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if width + ch_width > available {
-                break;
-            }
-            result.insert(0, ch);
-            width += ch_width;
-        }
-        result
-    };
+    let shown = fit_tail(input, available);
 
     let x = area.x
         + (prefix_width + util::display_width(&shown))
@@ -767,11 +774,22 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         Mode::ThemePicker { .. } => {
             &[("j/k", "preview"), ("Enter", "apply"), ("Esc", "cancel")]
         }
+        Mode::EditFeed { editing: true, .. } => {
+            &[("Enter", "done"), ("Esc", "done"), ("Ctrl-u", "clear")]
+        }
+        Mode::EditFeed { editing: false, .. } => &[
+            ("j/k", "field"),
+            ("Enter", "edit/toggle"),
+            ("h/l", "change"),
+            ("Ctrl-s", "save"),
+            ("Esc", "cancel"),
+        ],
         Mode::Normal => match app.focus {
             Focus::Feeds => &[
                 ("j/k", "select"),
                 ("l", "entries"),
                 ("n", "new feed"),
+                ("e", "edit feed"),
                 (
                     "f",
                     if app.hide_read_feeds {
@@ -973,6 +991,7 @@ fn help_rows() -> Vec<HelpRow> {
         Key("1 / 2 / 3", "focus feeds / entries / reader"),
         Key("g / G", "go to top / bottom"),
         Key("n", "subscribe to a website (feeds are detected)"),
+        Key("e", "edit the selected feed"),
         Key("f (Feeds)", "hide / show feeds without unread entries"),
         Key("f (Entries)", "hide / show read articles"),
         Key("Ctrl-d / Ctrl-u", "half page down / up"),
@@ -1141,6 +1160,144 @@ fn draw_feed_picker(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+fn checkbox(value: bool) -> String {
+    if value {
+        "[x]".to_string()
+    } else {
+        "[ ]".to_string()
+    }
+}
+
+fn feed_field_value(
+    app: &App,
+    form: &FeedForm,
+    field: FeedField,
+    reveal_password: bool,
+) -> (String, bool) {
+    match field {
+        FeedField::Category => {
+            let title = app
+                .categories
+                .iter()
+                .find(|category| category.id == form.category_id)
+                .map(|category| category.title.clone())
+                .unwrap_or_else(|| format!("category {}", form.category_id));
+            return (title, false);
+        }
+        FeedField::Crawler => return (checkbox(form.crawler), false),
+        FeedField::Disabled => return (checkbox(form.disabled), false),
+        FeedField::IgnoreHttpCache => {
+            return (checkbox(form.ignore_http_cache), false);
+        }
+        FeedField::FetchViaProxy => {
+            return (checkbox(form.fetch_via_proxy), false);
+        }
+        FeedField::Password
+            if !reveal_password && !form.password.is_empty() =>
+        {
+            return ("••••••".to_string(), false);
+        }
+        _ => {}
+    }
+    let text = form.text(field).unwrap_or_default();
+    if text.is_empty() {
+        ("(empty)".to_string(), true)
+    } else {
+        (text.to_string(), false)
+    }
+}
+
+fn draw_feed_editor(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    pal: &Palette,
+) {
+    let Mode::EditFeed {
+        form,
+        cursor,
+        editing,
+        ..
+    } = &app.mode
+    else {
+        return;
+    };
+    let cursor = (*cursor).min(FeedField::ALL.len() - 1);
+    let editing = *editing;
+
+    let area = centered_rect(80, 92, area);
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(pal.border(true))
+        .style(pal.panel())
+        .title_top(Line::from(Span::styled(" Edit feed ", pal.heading())));
+
+    let inner = block.inner(area);
+    let inner_width = inner.width as usize;
+    let label_width = 19.min(inner_width.saturating_sub(1));
+    let value_width = inner_width.saturating_sub(label_width + 1);
+
+    let lines: Vec<Line<'static>> = FeedField::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let selected = index == cursor;
+            let (value, muted) =
+                feed_field_value(app, form, *field, selected && editing);
+            let shown = if selected && editing {
+                fit_tail(&value, value_width)
+            } else {
+                util::truncate(&value, value_width)
+            };
+            let value_style = if muted {
+                pal.dim()
+            } else if selected {
+                pal.strong()
+            } else {
+                pal.text()
+            };
+            let mut line = Line::from(vec![
+                Span::styled(
+                    format!("{:<label_width$}", field.label()),
+                    if selected { pal.heading() } else { pal.muted() },
+                ),
+                Span::styled(shown, value_style),
+            ]);
+            if selected {
+                line = line.style(pal.selected());
+            }
+            line
+        })
+        .collect();
+
+    let inner_height = inner.height as usize;
+    let offset = cursor.saturating_sub(inner_height.saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(pal.panel())
+            .scroll((offset as u16, 0))
+            .block(block),
+        area,
+    );
+
+    if inner.width > 0 && inner.height > 0 {
+        let field = FeedField::ALL[cursor];
+        let (value, _) = feed_field_value(app, form, field, editing);
+        let shown = if editing {
+            fit_tail(&value, value_width)
+        } else {
+            util::truncate(&value, value_width)
+        };
+        let offset_x = (label_width + util::display_width(&shown))
+            .min(inner_width.saturating_sub(1));
+        let x = inner.x + offset_x as u16;
+        let y = inner.y + (cursor - offset) as u16;
+        frame.set_cursor_position((x, y));
+    }
+}
+
 fn draw_theme_picker(
     frame: &mut Frame,
     app: &mut App,
@@ -1209,10 +1366,10 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::{
-        app::Mode,
+        app::{FeedField, FeedForm, Mode},
         config::{Auth, Config},
     };
-    use miniflux_api::models::{CategoryID, Subscription};
+    use miniflux_api::models::{CategoryID, FeedID, Subscription};
     use ratatui::{Terminal, backend::TestBackend};
     use url::Url;
 
@@ -1337,6 +1494,12 @@ mod tests {
                 cursor: 1,
                 category_id: CategoryID(1),
             },
+            Mode::EditFeed {
+                feed_id: FeedID(7),
+                form: Box::new(editor_form()),
+                cursor: 8,
+                editing: true,
+            },
         ];
         for mode in modes {
             app.mode = mode;
@@ -1394,5 +1557,49 @@ mod tests {
             text.contains("detected)"),
             "help text was clipped instead of wrapped: {text:?}"
         );
+    }
+
+    fn editor_form() -> FeedForm {
+        FeedForm {
+            title: "A feed with a rather long title for the editor".to_string(),
+            category_id: CategoryID(3),
+            feed_url: "https://example.com/feed.xml".to_string(),
+            site_url: "https://example.com".to_string(),
+            user_agent: String::new(),
+            username: "user".to_string(),
+            password: "secret".to_string(),
+            scraper_rules: String::new(),
+            rewrite_rules: String::new(),
+            blocklist_rules: String::new(),
+            keeplist_rules: String::new(),
+            crawler: true,
+            disabled: false,
+            ignore_http_cache: true,
+            fetch_via_proxy: false,
+        }
+    }
+
+    #[test]
+    fn feed_editor_renders_every_option() {
+        let mut app = test_app();
+        app.mode = Mode::EditFeed {
+            feed_id: FeedID(7),
+            form: Box::new(editor_form()),
+            cursor: 0,
+            editing: false,
+        };
+
+        let text = render_text(&mut app, 100, 30);
+
+        for field in FeedField::ALL {
+            assert!(
+                text.contains(field.label()),
+                "missing field {}: {text:?}",
+                field.label()
+            );
+        }
+        assert!(text.contains("A feed with a rather"));
+        assert!(text.contains("[x]"));
+        assert!(text.contains("••••••"));
     }
 }
