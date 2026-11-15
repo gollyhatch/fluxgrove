@@ -147,6 +147,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if matches!(app.mode, Mode::EditFeed { .. }) {
         // Keep the status line and key bar visible while editing.
         draw_feed_editor(frame, app, rows[1], &pal);
+        draw_category_picker(frame, app, rows[1], &pal);
     }
 }
 
@@ -774,12 +775,16 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         Mode::ThemePicker { .. } => {
             &[("j/k", "preview"), ("Enter", "apply"), ("Esc", "cancel")]
         }
+        Mode::EditFeed {
+            category_picker: Some(_),
+            ..
+        } => &[("j/k", "select"), ("Enter", "choose"), ("Esc", "cancel")],
         Mode::EditFeed { editing: true, .. } => {
             &[("Enter", "done"), ("Esc", "done"), ("Ctrl-u", "clear")]
         }
         Mode::EditFeed { editing: false, .. } => &[
             ("j/k", "field"),
-            ("Enter", "edit/toggle"),
+            ("Enter", "edit/change"),
             ("h/l", "change"),
             ("Ctrl-s", "save"),
             ("Esc", "cancel"),
@@ -1217,6 +1222,7 @@ fn draw_feed_editor(
         form,
         cursor,
         editing,
+        category_picker,
         ..
     } = &app.mode
     else {
@@ -1224,6 +1230,7 @@ fn draw_feed_editor(
     };
     let cursor = (*cursor).min(FeedField::ALL.len() - 1);
     let editing = *editing;
+    let category_picker_open = category_picker.is_some();
 
     let area = centered_rect(80, 92, area);
     frame.render_widget(Clear, area);
@@ -1282,7 +1289,7 @@ fn draw_feed_editor(
         area,
     );
 
-    if inner.width > 0 && inner.height > 0 {
+    if inner.width > 0 && inner.height > 0 && !category_picker_open {
         let field = FeedField::ALL[cursor];
         let (value, _) = feed_field_value(app, form, field, editing);
         let shown = if editing {
@@ -1296,6 +1303,60 @@ fn draw_feed_editor(
         let y = inner.y + (cursor - offset) as u16;
         frame.set_cursor_position((x, y));
     }
+}
+
+fn draw_category_picker(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    pal: &Palette,
+) {
+    let Mode::EditFeed {
+        category_picker: Some(cursor),
+        form,
+        ..
+    } = &app.mode
+    else {
+        return;
+    };
+
+    let categories = app.sorted_categories();
+    let cursor = (*cursor).min(categories.len().saturating_sub(1));
+
+    let area = centered_rect(60, 70, area);
+    frame.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = categories
+        .iter()
+        .map(|category| {
+            let marker = if category.id == form.category_id {
+                "● "
+            } else {
+                "  "
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(marker, pal.accent()),
+                Span::styled(category.title.clone(), pal.text()),
+            ]))
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(pal.border(true))
+        .style(pal.panel())
+        .title_top(Line::from(Span::styled(
+            " Choose category ",
+            pal.heading(),
+        )));
+
+    let mut state = ListState::default().with_selected(Some(cursor));
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(pal.selected())
+        .highlight_symbol("▸ ");
+
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_theme_picker(
@@ -1369,7 +1430,9 @@ mod tests {
         app::{FeedField, FeedForm, Mode},
         config::{Auth, Config},
     };
-    use miniflux_api::models::{CategoryID, FeedID, Subscription};
+    use miniflux_api::models::{
+        Category, CategoryID, FeedID, Subscription, UserID,
+    };
     use ratatui::{Terminal, backend::TestBackend};
     use url::Url;
 
@@ -1458,6 +1521,7 @@ mod tests {
         let mut app = test_app();
         app.entries = vec![probe_entry(), probe_entry()];
         app.entry_state.select(Some(0));
+        app.categories = vec![category(1, "News"), category(2, "Tech")];
         app.ensure_article();
         let widths = [
             1u16, 2, 3, 10, 21, 22, 40, 65, 66, 99, 100, 101, 140, 911, 1300,
@@ -1499,6 +1563,14 @@ mod tests {
                 form: Box::new(editor_form()),
                 cursor: 8,
                 editing: true,
+                category_picker: None,
+            },
+            Mode::EditFeed {
+                feed_id: FeedID(7),
+                form: Box::new(editor_form()),
+                cursor: 1,
+                editing: false,
+                category_picker: Some(1),
             },
         ];
         for mode in modes {
@@ -1559,6 +1631,17 @@ mod tests {
         );
     }
 
+    fn category(id: i64, title: &str) -> Category {
+        Category {
+            id: CategoryID(id),
+            user_id: UserID(1),
+            title: title.to_string(),
+            hide_globally: false,
+            feed_count: None,
+            total_unread: None,
+        }
+    }
+
     fn editor_form() -> FeedForm {
         FeedForm {
             title: "A feed with a rather long title for the editor".to_string(),
@@ -1587,6 +1670,7 @@ mod tests {
             form: Box::new(editor_form()),
             cursor: 0,
             editing: false,
+            category_picker: None,
         };
 
         let text = render_text(&mut app, 100, 30);
@@ -1601,5 +1685,24 @@ mod tests {
         assert!(text.contains("A feed with a rather"));
         assert!(text.contains("[x]"));
         assert!(text.contains("••••••"));
+    }
+
+    #[test]
+    fn category_picker_renders_the_categories() {
+        let mut app = test_app();
+        app.categories = vec![category(1, "News"), category(2, "Tech")];
+        app.mode = Mode::EditFeed {
+            feed_id: FeedID(7),
+            form: Box::new(editor_form()),
+            cursor: 1,
+            editing: false,
+            category_picker: Some(1),
+        };
+
+        let text = render_text(&mut app, 80, 24);
+
+        assert!(text.contains("Choose category"), "{text:?}");
+        assert!(text.contains("News"), "{text:?}");
+        assert!(text.contains("Tech"), "{text:?}");
     }
 }

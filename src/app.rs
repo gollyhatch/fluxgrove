@@ -296,6 +296,7 @@ pub enum Mode {
         form: Box<FeedForm>,
         cursor: usize,
         editing: bool,
+        category_picker: Option<usize>,
     },
 }
 
@@ -636,8 +637,14 @@ impl App {
                         form,
                         cursor,
                         editing,
+                        category_picker,
                     } => self.handle_feed_editor(
-                        key, feed_id, form, cursor, editing,
+                        key,
+                        feed_id,
+                        form,
+                        cursor,
+                        editing,
+                        category_picker,
                     ),
                 }
             }
@@ -1172,6 +1179,7 @@ impl App {
             form: Box::new(FeedForm::from_feed(feed)),
             cursor: 0,
             editing: false,
+            category_picker: None,
         };
         self.set_status(StatusKind::Info, "Editing the feed; Ctrl-s saves");
     }
@@ -1183,12 +1191,46 @@ impl App {
         mut form: Box<FeedForm>,
         mut cursor: usize,
         mut editing: bool,
+        mut category_picker: Option<usize>,
     ) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         let last = FeedField::ALL.len() - 1;
         cursor = cursor.min(last);
         let field = FeedField::ALL[cursor];
+
+        if let Some(mut picker) = category_picker {
+            let categories = self.sorted_categories();
+            let last = categories.len().saturating_sub(1);
+            let mut close = false;
+            match key.code {
+                KeyCode::Esc => close = true,
+                KeyCode::Enter => {
+                    if let Some(category) = categories.get(picker) {
+                        form.category_id = category.id;
+                    }
+                    close = true;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    picker = (picker + 1).min(last);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    picker = picker.saturating_sub(1);
+                }
+                KeyCode::Char('g') => picker = 0,
+                KeyCode::Char('G') => picker = last,
+                _ => {}
+            }
+            self.mode = Mode::EditFeed {
+                feed_id,
+                form,
+                cursor,
+                editing,
+                category_picker: if close { None } else { Some(picker) },
+            };
+            self.dirty = true;
+            return;
+        }
 
         if editing {
             match key.code {
@@ -1237,6 +1279,7 @@ impl App {
                 form,
                 cursor,
                 editing,
+                category_picker: None,
             };
             self.dirty = true;
             return;
@@ -1263,8 +1306,21 @@ impl App {
             KeyCode::Char('G') => cursor = last,
             KeyCode::Enter => match field {
                 FeedField::Category => {
-                    form.category_id =
-                        self.cycle_category(form.category_id, true);
+                    let categories = self.sorted_categories();
+                    if categories.is_empty() {
+                        self.set_status(
+                            StatusKind::Warning,
+                            "No categories to choose from",
+                        );
+                    } else {
+                        let index = categories
+                            .iter()
+                            .position(|category| {
+                                category.id == form.category_id
+                            })
+                            .unwrap_or(0);
+                        category_picker = Some(index);
+                    }
                 }
                 _ if field.is_toggle() => form.toggle(field),
                 _ => editing = true,
@@ -1283,6 +1339,7 @@ impl App {
             form,
             cursor,
             editing,
+            category_picker,
         };
         self.dirty = true;
     }
@@ -1294,10 +1351,6 @@ impl App {
         forward: bool,
     ) {
         match field {
-            FeedField::Category => {
-                form.category_id =
-                    self.cycle_category(form.category_id, forward);
-            }
             FeedField::Crawler => form.crawler = forward,
             FeedField::Disabled => form.disabled = forward,
             FeedField::IgnoreHttpCache => form.ignore_http_cache = forward,
@@ -1306,25 +1359,11 @@ impl App {
         }
     }
 
-    fn cycle_category(&self, current: CategoryID, forward: bool) -> CategoryID {
+    /// Categories in the order the sidebar and the pickers show them.
+    pub fn sorted_categories(&self) -> Vec<&Category> {
         let mut categories: Vec<&Category> = self.categories.iter().collect();
         categories.sort_by_key(|category| category.title.to_lowercase());
-        if categories.is_empty() {
-            return current;
-        }
-        let Some(index) = categories
-            .iter()
-            .position(|category| category.id == current)
-        else {
-            return categories[0].id;
-        };
-        let count = categories.len();
-        let next = if forward {
-            (index + 1) % count
-        } else {
-            (index + count - 1) % count
-        };
-        categories[next].id
+        categories
     }
 
     fn save_feed(&mut self, feed_id: FeedID, form: &FeedForm) {
@@ -2798,20 +2837,91 @@ mod tests {
     }
 
     #[test]
-    fn feed_editor_toggles_booleans_and_cycles_categories() {
-        let (mut app, _rx) = test_app_with_feed();
+    fn feed_editor_opens_a_category_picker() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
         press(&mut app, KeyCode::Char('e'));
-
-        // Category: Enter moves to the next category in title order.
-        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j')); // Category
         press(&mut app, KeyCode::Enter);
-        let form = match &app.mode {
-            Mode::EditFeed { form, .. } => form,
+
+        let (picker, category) = match &app.mode {
+            Mode::EditFeed {
+                category_picker,
+                form,
+                ..
+            } => (*category_picker, form.category_id),
             other => panic!("expected the feed editor, got {other:?}"),
         };
-        assert_eq!(form.category_id, CategoryID(2));
+        // The picker starts on the feed's current category.
+        assert_eq!(picker, Some(0));
+        assert_eq!(category, CategoryID(1));
 
-        // h/l set booleans explicitly.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+
+        let (picker, category) = match &app.mode {
+            Mode::EditFeed {
+                category_picker,
+                form,
+                ..
+            } => (*category_picker, form.category_id),
+            other => panic!("expected the feed editor, got {other:?}"),
+        };
+        assert_eq!(picker, None);
+        assert_eq!(category, CategoryID(2));
+    }
+
+    #[test]
+    fn feed_editor_category_picker_cancels() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Esc);
+
+        let (picker, category) = match &app.mode {
+            Mode::EditFeed {
+                category_picker,
+                form,
+                ..
+            } => (*category_picker, form.category_id),
+            other => panic!("expected the feed editor, got {other:?}"),
+        };
+        assert_eq!(picker, None);
+        assert_eq!(category, CategoryID(1));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn feed_editor_category_ignores_h_and_l() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('j'));
+
+        press(&mut app, KeyCode::Char('l'));
+
+        let (picker, category) = match &app.mode {
+            Mode::EditFeed {
+                category_picker,
+                form,
+                ..
+            } => (*category_picker, form.category_id),
+            other => panic!("expected the feed editor, got {other:?}"),
+        };
+        assert_eq!(picker, None);
+        assert_eq!(category, CategoryID(1));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn feed_editor_toggles_booleans_with_enter_and_h_l() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        press(&mut app, KeyCode::Char('e'));
+
         press(&mut app, KeyCode::Char('G'));
         press(&mut app, KeyCode::Char('l'));
         let form = match &app.mode {
@@ -2830,7 +2940,6 @@ mod tests {
         };
         assert!(!form.fetch_via_proxy);
 
-        // Enter toggles a boolean.
         press(&mut app, KeyCode::Enter);
         let form = match &app.mode {
             Mode::EditFeed { form, .. } => form,
