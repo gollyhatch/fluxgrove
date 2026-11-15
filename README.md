@@ -48,6 +48,7 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
 - HTML articles rendered as readable text, with word wrapping and scrollable reader.
 - 39 built-in [opaline](https://crates.io/crates/opaline) themes with a live
   preview picker.
+- `fluxgrove unread` prints the unread count without starting the interface.
 - Config file or environment variables; token or username/password authentication.
 - Responsive: hides panes as the terminal gets narrower, down to a single pane.
 
@@ -58,6 +59,16 @@ cargo install --path .
 ```
 
 The resulting binary is `fluxgrove`.
+
+Print the number of unread entries without starting the interface:
+
+```sh
+fluxgrove unread
+```
+
+The command uses the same configuration file, CLI flags and `MINIFLUX_*`
+environment variables as the TUI, writes the count to standard output and exits
+with a non-zero status on error. It suits status bars and scripts.
 
 ## Configuration
 

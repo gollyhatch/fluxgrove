@@ -203,6 +203,16 @@ impl ApiClient {
             .context("could not read the updated feed")
     }
 
+    /// Number of unread entries across all feeds.
+    pub async fn unread_count(&self) -> Result<i64> {
+        let counters = self
+            .api
+            .get_feed_counters(&self.http)
+            .await
+            .context("could not read the unread count")?;
+        Ok(counters.unreads.values().sum())
+    }
+
     async fn bootstrap(&self) -> Result<BootstrapData> {
         let (feeds, categories, counters, user) = tokio::try_join!(
             self.api.get_feeds(&self.http),
@@ -826,6 +836,49 @@ mod tests {
             .expect("server finished")
             .expect("server task");
         assert_eq!(request_line, "DELETE /v1/feeds/42 HTTP/1.1");
+    }
+
+    #[tokio::test]
+    async fn unread_count_sums_the_feed_counters() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let (headers, _body) = read_http_request(&mut socket).await;
+            let request_line =
+                headers.lines().next().unwrap_or_default().to_string();
+            let body = serde_json::json!({
+                "reads": {"1": 4},
+                "unreads": {"1": 2, "2": 3}
+            })
+            .to_string();
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(reply.as_bytes())
+                .await
+                .expect("write response");
+            request_line
+        });
+
+        let client =
+            ApiClient::new(&test_config(&format!("http://{address}/")))
+                .expect("api client");
+
+        let count = client.unread_count().await.expect("unread count");
+        assert_eq!(count, 5);
+
+        let request_line = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server finished")
+            .expect("server task");
+        assert_eq!(request_line, "GET /v1/feeds/counters HTTP/1.1");
     }
 
     #[test]

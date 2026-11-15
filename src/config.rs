@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use url::Url;
 
@@ -21,11 +21,11 @@ use url::Url;
 )]
 pub struct Cli {
     /// Path to the configuration file.
-    #[arg(long, value_name = "PATH", env = "FLUXGROVE_CONFIG")]
+    #[arg(long, value_name = "PATH", env = "FLUXGROVE_CONFIG", global = true)]
     pub config: Option<PathBuf>,
 
     /// Miniflux instance URL, e.g. https://reader.example.com
-    #[arg(long, value_name = "URL", env = "MINIFLUX_URL")]
+    #[arg(long, value_name = "URL", env = "MINIFLUX_URL", global = true)]
     pub url: Option<String>,
 
     /// Miniflux API token.
@@ -33,12 +33,13 @@ pub struct Cli {
         long,
         value_name = "TOKEN",
         env = "MINIFLUX_TOKEN",
-        hide_env_values = true
+        hide_env_values = true,
+        global = true
     )]
     pub token: Option<String>,
 
     /// Miniflux username (used with --password when no token is set).
-    #[arg(long, value_name = "USER", env = "MINIFLUX_USERNAME")]
+    #[arg(long, value_name = "USER", env = "MINIFLUX_USERNAME", global = true)]
     pub username: Option<String>,
 
     /// Miniflux password (used with --username when no token is set).
@@ -46,7 +47,8 @@ pub struct Cli {
         long,
         value_name = "PASSWORD",
         env = "MINIFLUX_PASSWORD",
-        hide_env_values = true
+        hide_env_values = true,
+        global = true
     )]
     pub password: Option<String>,
 
@@ -61,6 +63,16 @@ pub struct Cli {
     /// List the available builtin themes and exit.
     #[arg(long)]
     pub list_themes: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Commands that run without starting the terminal interface.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Print the number of unread entries and exit.
+    Unread,
 }
 
 #[derive(Debug, Clone)]
@@ -264,7 +276,39 @@ mod tests {
             theme: None,
             limit: None,
             list_themes: false,
+            command: None,
         }
+    }
+
+    #[test]
+    fn unread_is_a_subcommand() {
+        let cli = Cli::try_parse_from(["fluxgrove", "unread"]).expect("parse");
+
+        assert!(matches!(cli.command, Some(Command::Unread)));
+    }
+
+    #[test]
+    fn without_a_subcommand_the_tui_starts() {
+        let cli = Cli::try_parse_from(["fluxgrove"]).expect("parse");
+
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn connection_options_work_after_the_subcommand() {
+        let cli = Cli::try_parse_from([
+            "fluxgrove",
+            "unread",
+            "--url",
+            "https://reader.example.com",
+            "--token",
+            "secret",
+        ])
+        .expect("parse");
+
+        assert!(matches!(cli.command, Some(Command::Unread)));
+        assert_eq!(cli.url.as_deref(), Some("https://reader.example.com"));
+        assert_eq!(cli.token.as_deref(), Some("secret"));
     }
 
     #[test]

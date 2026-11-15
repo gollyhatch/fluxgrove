@@ -33,6 +33,11 @@ async fn main() -> Result<()> {
     let config = Config::load(&cli)?;
     let client = api::ApiClient::new(&config)?;
 
+    if let Some(config::Command::Unread) = cli.command {
+        println!("{}", client.unread_count().await?);
+        return Ok(());
+    }
+
     let requested_theme = config.theme.clone();
     let (theme_id, theme, warning) = match opaline::builtins::load_by_name(
         &requested_theme,
