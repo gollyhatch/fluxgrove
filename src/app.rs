@@ -706,6 +706,7 @@ impl App {
             KeyCode::Char('m') => self.toggle_read(),
             KeyCode::Char('M') => self.mark_view_read(),
             KeyCode::Char('e') => self.edit_selected_feed(),
+            KeyCode::Char('p') => self.jump_to_entry_feed(),
             KeyCode::Char('s') => self.toggle_star(),
             KeyCode::Char('J') if self.focus == Focus::Article => {
                 self.open_relative_article(1);
@@ -1194,6 +1195,32 @@ impl App {
             category_picker: None,
         };
         self.set_status(StatusKind::Info, "Editing the feed; Ctrl-s saves");
+    }
+
+    /// Select the feed of the entry under the cursor in the Feeds pane.
+    fn jump_to_entry_feed(&mut self) {
+        let Some(feed_id) = self.selected_entry().map(|entry| entry.feed_id)
+        else {
+            self.set_status(StatusKind::Warning, "No entry selected");
+            return;
+        };
+        if !self.feeds.iter().any(|feed| feed.id == feed_id) {
+            self.set_status(StatusKind::Warning, "Feed is no longer available");
+            return;
+        }
+
+        let selection = Selection::Feed(feed_id);
+        if self.selection == selection {
+            self.focus = Focus::Feeds;
+            self.dirty = true;
+            return;
+        }
+
+        self.apply_selection(selection);
+        self.set_status(
+            StatusKind::Info,
+            format!("Showing “{}”", self.selection_label()),
+        );
     }
 
     fn handle_feed_editor(
@@ -2869,6 +2896,76 @@ mod tests {
         press(&mut app, KeyCode::Char('e'));
 
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn p_jumps_to_the_entry_feed() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.bootstrapped = true;
+        app.selection = Selection::Starred;
+        app.focus = Focus::Article;
+        app.entries = vec![render_entry(42, "unread")];
+        app.entry_cursor = 0;
+
+        press(&mut app, KeyCode::Char('p'));
+
+        assert_eq!(app.selection, Selection::Feed(FeedID(7)));
+        assert_eq!(app.focus, Focus::Feeds);
+        let rows = app.sidebar_rows();
+        assert_eq!(
+            rows[app.sidebar_cursor].selection(),
+            Selection::Feed(FeedID(7))
+        );
+        assert!(app.entries.is_empty());
+
+        let command = rx.try_recv().expect("load-entries command");
+        assert!(matches!(
+            command,
+            ApiCommand::LoadEntries { filter, .. }
+                if filter.feed_id == Some(FeedID(7))
+        ));
+    }
+
+    #[test]
+    fn p_without_an_entry_shows_a_warning() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.selection = Selection::Unread;
+
+        press(&mut app, KeyCode::Char('p'));
+
+        assert_eq!(app.selection, Selection::Unread);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn p_focuses_the_feed_pane_when_the_feed_is_already_selected() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.bootstrapped = true;
+        app.focus = Focus::Article;
+        app.entries = vec![render_entry(42, "unread")];
+        app.entry_cursor = 0;
+
+        press(&mut app, KeyCode::Char('p'));
+
+        assert_eq!(app.focus, Focus::Feeds);
+        assert_eq!(app.selection, Selection::Feed(FeedID(7)));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn p_with_an_entry_from_an_unknown_feed_shows_a_warning() {
+        let (mut app, mut rx) = test_app();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.selection = Selection::Unread;
+        app.entries = vec![render_entry(42, "unread")];
+
+        press(&mut app, KeyCode::Char('p'));
+
+        assert_eq!(app.selection, Selection::Unread);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
