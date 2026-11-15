@@ -1166,16 +1166,28 @@ impl App {
     }
 
     fn edit_selected_feed(&mut self) {
-        let Selection::Feed(id) = self.selection else {
-            self.set_status(StatusKind::Warning, "Select a feed to edit");
+        // The selected entry wins, so `e` works from any view. Fall back to a
+        // feed row when the entries pane is empty.
+        let feed_id = self.selected_entry().map(|entry| entry.feed_id).or(
+            match self.selection {
+                Selection::Feed(id) => Some(id),
+                _ => None,
+            },
+        );
+        let Some(feed_id) = feed_id else {
+            self.set_status(
+                StatusKind::Warning,
+                "Select an entry or feed to edit",
+            );
             return;
         };
-        let Some(feed) = self.feeds.iter().find(|feed| feed.id == id) else {
+        let Some(feed) = self.feeds.iter().find(|feed| feed.id == feed_id)
+        else {
             self.set_status(StatusKind::Warning, "Feed is no longer available");
             return;
         };
         self.mode = Mode::EditFeed {
-            feed_id: id,
+            feed_id,
             form: Box::new(FeedForm::from_feed(feed)),
             cursor: 0,
             editing: false,
@@ -2825,6 +2837,38 @@ mod tests {
             }
             other => panic!("expected the feed editor, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn e_opens_the_editor_for_the_selected_entry_feed() {
+        let (mut app, _rx) = test_app_with_feed();
+        app.selection = Selection::Starred;
+        app.entries = vec![render_entry(42, "unread")];
+        app.entry_cursor = 0;
+        app.focus = Focus::Entries;
+
+        press(&mut app, KeyCode::Char('e'));
+
+        match &app.mode {
+            Mode::EditFeed { feed_id, form, .. } => {
+                assert_eq!(*feed_id, FeedID(7));
+                assert_eq!(form.title, "Example");
+            }
+            other => panic!("expected the feed editor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn e_with_an_entry_from_an_unknown_feed_shows_a_warning() {
+        let (mut app, _rx) = test_app();
+        app.selection = Selection::Unread;
+        app.entries = vec![render_entry(42, "unread")];
+        app.entry_cursor = 0;
+        app.focus = Focus::Entries;
+
+        press(&mut app, KeyCode::Char('e'));
+
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]
