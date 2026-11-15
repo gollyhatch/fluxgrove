@@ -1211,12 +1211,15 @@ impl App {
 
         let selection = Selection::Feed(feed_id);
         if self.selection == selection {
-            self.focus = Focus::Feeds;
+            self.focus = Focus::Entries;
             self.dirty = true;
             return;
         }
 
         self.apply_selection(selection);
+        // `apply_selection` focuses the sidebar; the reader keeps the entries
+        // in view after jumping.
+        self.focus = Focus::Entries;
         self.set_status(
             StatusKind::Info,
             format!("Showing “{}”", self.selection_label()),
@@ -2911,7 +2914,7 @@ mod tests {
         press(&mut app, KeyCode::Char('p'));
 
         assert_eq!(app.selection, Selection::Feed(FeedID(7)));
-        assert_eq!(app.focus, Focus::Feeds);
+        assert_eq!(app.focus, Focus::Entries);
         let rows = app.sidebar_rows();
         assert_eq!(
             rows[app.sidebar_cursor].selection(),
@@ -2940,7 +2943,7 @@ mod tests {
     }
 
     #[test]
-    fn p_focuses_the_feed_pane_when_the_feed_is_already_selected() {
+    fn p_keeps_the_entries_pane_focused_when_the_feed_is_selected() {
         let (mut app, mut rx) = test_app_with_feed();
         let _ = rx.try_recv(); // initial Bootstrap
         app.bootstrapped = true;
@@ -2950,7 +2953,7 @@ mod tests {
 
         press(&mut app, KeyCode::Char('p'));
 
-        assert_eq!(app.focus, Focus::Feeds);
+        assert_eq!(app.focus, Focus::Entries);
         assert_eq!(app.selection, Selection::Feed(FeedID(7)));
         assert!(rx.try_recv().is_err());
     }
