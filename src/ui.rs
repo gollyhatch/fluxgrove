@@ -660,7 +660,7 @@ fn pane_block(
 fn draw_status(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     frame.render_widget(Block::default().style(pal.base()), area);
 
-    if let Mode::Search { input, scope } = &app.mode {
+    if let Mode::Search { input, scope, .. } = &app.mode {
         let prefix = match scope {
             SearchScope::Entries => "/",
             SearchScope::Feeds => "Feeds: ",
@@ -1023,7 +1023,7 @@ fn help_rows() -> Vec<HelpRow> {
         ),
         Key("r", "ask Miniflux to refresh feeds"),
         Section("Searching"),
-        Key("/", "search entries, or filter feeds"),
+        Key("/", "search entries, or filter feeds as you type"),
         Key("Enter", "apply the search"),
         Key("Esc", "cancel the search"),
         Key("c", "clear the active search"),
@@ -1670,6 +1670,7 @@ mod tests {
             Mode::Search {
                 input: "rust".to_string(),
                 scope: SearchScope::Feeds,
+                original: String::new(),
             },
         ];
         for mode in modes {
@@ -1872,6 +1873,7 @@ mod tests {
         app.mode = Mode::Search {
             input: "rust".to_string(),
             scope: SearchScope::Feeds,
+            original: String::new(),
         };
 
         let text = render_text(&mut app, 80, 24);

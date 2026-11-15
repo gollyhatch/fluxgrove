@@ -38,8 +38,8 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
 - Jump from an entry to its feed with `p`, as if the feed were selected in the
   Feeds pane.
 - Server-side search, unread and starred views, per-category and per-feed views.
-- Filter the feed list with `/` while the Feeds pane is focused; `Esc` clears
-  the filter.
+- Filter the feed list with `/` while the Feeds pane is focused, live as you
+  type; `Enter` keeps the filter and `Esc` restores the previous one.
 - Toggle read state and bookmarks, mark a whole view as read (with confirmation).
 - Opening or stepping through articles with `J`/`K` marks them read automatically.
 - Open the original article in your browser with `o`, or in the XDG default
@@ -145,7 +145,7 @@ make it stick.
 
 | Key | Action |
 | --- | --- |
-| `/` | Search entries, or filter the feed list while the Feeds pane is focused |
+| `/` | Search entries, or filter the feed list as you type while the Feeds pane is focused |
 | `c` | Clear the active search |
 | `t` | Open the theme picker (`j`/`k` preview, `Enter` apply, `Esc` cancel) |
 | `?` | Toggle the help overlay |

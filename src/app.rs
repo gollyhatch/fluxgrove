@@ -289,6 +289,7 @@ pub enum Mode {
     Search {
         input: String,
         scope: SearchScope,
+        original: String,
     },
     Subscribe {
         input: String,
@@ -648,9 +649,11 @@ impl App {
                 let mode = std::mem::take(&mut self.mode);
                 match mode {
                     Mode::Normal => self.handle_normal(key),
-                    Mode::Search { input, scope } => {
-                        self.handle_search(key, input, scope)
-                    }
+                    Mode::Search {
+                        input,
+                        scope,
+                        original,
+                    } => self.handle_search(key, input, scope, original),
                     Mode::Subscribe { input } => {
                         self.handle_subscribe(key, input)
                     }
@@ -775,12 +778,20 @@ impl App {
             KeyCode::Char('o') => self.open_selected(),
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Char('/') => {
-                let (input, scope) = if self.focus == Focus::Feeds {
-                    (self.feed_filter.clone(), SearchScope::Feeds)
+                let (input, scope, original) = if self.focus == Focus::Feeds {
+                    (
+                        self.feed_filter.clone(),
+                        SearchScope::Feeds,
+                        self.feed_filter.clone(),
+                    )
                 } else {
-                    (self.search.clone(), SearchScope::Entries)
+                    (self.search.clone(), SearchScope::Entries, String::new())
                 };
-                self.mode = Mode::Search { input, scope };
+                self.mode = Mode::Search {
+                    input,
+                    scope,
+                    original,
+                };
             }
             KeyCode::Char('c') => self.clear_search(),
             KeyCode::Char('n') => {
@@ -802,12 +813,20 @@ impl App {
         key: crossterm::event::KeyEvent,
         mut input: String,
         scope: SearchScope,
+        original: String,
     ) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         match key.code {
             KeyCode::Esc => {
+                if scope == SearchScope::Feeds {
+                    // Undo the live filtering.
+                    self.feed_filter = original;
+                    self.sync_sidebar_cursor();
+                    self.dirty = true;
+                }
                 self.mode = Mode::Normal;
+                return;
             }
             KeyCode::Enter => {
                 self.mode = Mode::Normal;
@@ -838,16 +857,15 @@ impl App {
                         );
                     }
                 }
+                return;
             }
             KeyCode::Backspace => {
                 input.pop();
-                self.mode = Mode::Search { input, scope };
             }
             KeyCode::Char('u')
                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 input.clear();
-                self.mode = Mode::Search { input, scope };
             }
             KeyCode::Char('w')
                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -860,7 +878,6 @@ impl App {
                         break;
                     }
                 }
-                self.mode = Mode::Search { input, scope };
             }
             KeyCode::Char(ch)
                 if !key.modifiers.intersects(
@@ -870,11 +887,27 @@ impl App {
                 ) =>
             {
                 input.push(ch);
-                self.mode = Mode::Search { input, scope };
             }
-            _ => {
-                self.mode = Mode::Search { input, scope };
-            }
+            _ => {}
+        }
+
+        if scope == SearchScope::Feeds {
+            self.apply_live_feed_filter(&input);
+        }
+        self.mode = Mode::Search {
+            input,
+            scope,
+            original,
+        };
+    }
+
+    /// Apply the feed filter as the user types, before the prompt closes.
+    fn apply_live_feed_filter(&mut self, input: &str) {
+        let value = input.trim().to_string();
+        if value != self.feed_filter {
+            self.feed_filter = value;
+            self.sync_sidebar_cursor();
+            self.dirty = true;
         }
     }
 
@@ -3562,5 +3595,67 @@ mod tests {
         assert!(rows.iter().any(
             |row| matches!(row, SidebarRow::Feed { id, .. } if *id == FeedID(9))
         ));
+    }
+
+    #[test]
+    fn feed_filter_applies_while_typing() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.feeds.push(render_feed(9, "Cooking", 2));
+        app.selection = Selection::Unread;
+        app.focus = Focus::Feeds;
+        press(&mut app, KeyCode::Char('/'));
+
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('x'));
+
+        assert_eq!(app.feed_filter, "ex");
+        assert!(matches!(app.mode, Mode::Search { .. }));
+        let rows = app.sidebar_rows();
+        assert!(rows.iter().any(
+            |row| matches!(row, SidebarRow::Feed { id, .. } if *id == FeedID(7))
+        ));
+        assert!(!rows.iter().any(
+            |row| matches!(row, SidebarRow::Feed { id, .. } if *id == FeedID(9))
+        ));
+        assert!(rx.try_recv().is_err());
+
+        press_with(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert!(app.feed_filter.is_empty());
+    }
+
+    #[test]
+    fn feed_filter_escape_restores_the_previous_filter() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.feed_filter = "exam".to_string();
+        app.focus = Focus::Feeds;
+
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.feed_filter, "examz");
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.feed_filter, "exam");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn feed_filter_enter_keeps_the_typed_filter() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.focus = Focus::Feeds;
+
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "exam".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.feed_filter, "exam");
+        assert!(rx.try_recv().is_err());
     }
 }
