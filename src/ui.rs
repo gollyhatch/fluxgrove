@@ -776,25 +776,8 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         Mode::ThemePicker { .. } => {
             &[("j/k", "preview"), ("Enter", "apply"), ("Esc", "cancel")]
         }
-        Mode::EditFeed {
-            confirm_delete: true,
-            ..
-        } => &[("y", "unsubscribe"), ("n", "cancel")],
-        Mode::EditFeed {
-            category_picker: Some(_),
-            ..
-        } => &[("j/k", "select"), ("Enter", "choose"), ("Esc", "cancel")],
-        Mode::EditFeed { editing: true, .. } => {
-            &[("Enter", "done"), ("Esc", "done"), ("Ctrl-u", "clear")]
-        }
-        Mode::EditFeed { editing: false, .. } => &[
-            ("j/k", "field"),
-            ("Enter", "edit/change"),
-            ("h/l", "change"),
-            ("Ctrl-s", "save"),
-            ("d", "unsubscribe"),
-            ("Esc", "cancel"),
-        ],
+        // The feed editor shows its hints inside the dialog.
+        Mode::EditFeed { .. } => &[],
         Mode::Normal => match app.focus {
             Focus::Feeds => &[
                 ("j/k", "select"),
@@ -1244,11 +1227,24 @@ fn draw_feed_editor(
     let area = centered_rect(80, 92, area);
     frame.render_widget(Clear, area);
 
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(pal.border(true))
         .style(pal.panel())
         .title_top(Line::from(Span::styled(" Edit feed ", pal.heading())));
+
+    // The dialog carries its own key hints; overlays show theirs.
+    if !overlay_open {
+        let hints = if editing {
+            " Enter done · Esc done · Ctrl-u clear "
+        } else {
+            " Enter edit · Ctrl-s save · d unsubscribe · Esc cancel "
+        };
+        block = block.title_bottom(
+            Line::from(Span::styled(hints, pal.muted()))
+                .alignment(Alignment::Center),
+        );
+    }
 
     let inner = block.inner(area);
     let inner_width = inner.width as usize;
@@ -1354,10 +1350,14 @@ fn draw_category_picker(
         .borders(Borders::ALL)
         .border_style(pal.border(true))
         .style(pal.panel())
-        .title_top(Line::from(Span::styled(
-            " Choose category ",
-            pal.heading(),
-        )));
+        .title_top(Line::from(Span::styled(" Choose category ", pal.heading())))
+        .title_bottom(
+            Line::from(Span::styled(
+                " j/k select · Enter choose · Esc cancel ",
+                pal.muted(),
+            ))
+            .alignment(Alignment::Center),
+        );
 
     let mut state = ListState::default().with_selected(Some(cursor));
     let list = List::new(items)
@@ -1786,6 +1786,7 @@ mod tests {
         let text = render_text(&mut app, 80, 24);
 
         assert!(text.contains("Choose category"), "{text:?}");
+        assert!(text.contains("Enter choose"), "{text:?}");
         assert!(text.contains("News"), "{text:?}");
         assert!(text.contains("Tech"), "{text:?}");
     }
@@ -1810,5 +1811,40 @@ mod tests {
         assert!(text.contains("and its entries?"), "{text:?}");
         assert!(text.contains("[y]"), "{text:?}");
         assert!(text.contains("[n]"), "{text:?}");
+    }
+
+    #[test]
+    fn feed_editor_hints_live_in_the_dialog() {
+        let mut app = test_app();
+        app.mode = Mode::EditFeed {
+            feed_id: FeedID(7),
+            form: Box::new(editor_form()),
+            cursor: 0,
+            editing: false,
+            category_picker: None,
+            confirm_delete: false,
+        };
+
+        let text = render_text(&mut app, 80, 30);
+        let keybar = text.lines().last().unwrap_or_default();
+        assert!(
+            keybar.trim().is_empty(),
+            "the key bar still shows hints: {keybar:?}"
+        );
+        assert!(text.contains("Ctrl-s save"), "{text:?}");
+        assert!(text.contains("d unsubscribe"), "{text:?}");
+
+        app.mode = Mode::EditFeed {
+            feed_id: FeedID(7),
+            form: Box::new(editor_form()),
+            cursor: 0,
+            editing: true,
+            category_picker: None,
+            confirm_delete: false,
+        };
+
+        let text = render_text(&mut app, 80, 30);
+        assert!(text.contains("Ctrl-u clear"), "{text:?}");
+        assert!(!text.contains("Ctrl-s save"), "{text:?}");
     }
 }
