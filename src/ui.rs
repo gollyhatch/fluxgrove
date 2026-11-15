@@ -994,7 +994,7 @@ fn help_rows() -> Vec<HelpRow> {
         Key("PgUp / PgDn", "page up / down"),
         Key("Ctrl-f / Ctrl-b", "full page down / up"),
         Key("Enter", "open entry in the reader"),
-        Key("Esc", "go back one pane"),
+        Key("Esc", "clear the search, or go back one pane"),
         Section("Reading"),
         Key("m", "mark read (and advance) / unread"),
         Key("M", "mark every entry in the current view as read"),

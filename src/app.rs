@@ -711,7 +711,13 @@ impl App {
             }
 
             KeyCode::Enter => self.activate(),
-            KeyCode::Esc => self.focus_left(),
+            KeyCode::Esc => {
+                if self.search.is_empty() {
+                    self.focus_left();
+                } else {
+                    self.clear_search();
+                }
+            }
 
             KeyCode::Char('f') => match self.focus {
                 Focus::Feeds => self.toggle_hide_read_feeds(),
@@ -3318,5 +3324,36 @@ mod tests {
         });
 
         assert!(matches!(app.mode, Mode::EditFeed { .. }));
+    }
+
+    #[test]
+    fn escape_clears_an_active_search() {
+        let (mut app, mut rx) = test_app();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.bootstrapped = true;
+        app.search = "rust".to_string();
+        app.focus = Focus::Entries;
+        app.entries = vec![render_entry(1, "unread")];
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.search.is_empty());
+        assert_eq!(app.focus, Focus::Entries);
+        assert!(app.entries.is_empty());
+        let command = rx.try_recv().expect("load-entries command");
+        assert!(matches!(
+            command,
+            ApiCommand::LoadEntries { filter, .. } if filter.search.is_none()
+        ));
+    }
+
+    #[test]
+    fn escape_goes_back_a_pane_without_a_search() {
+        let (mut app, _rx) = test_app();
+        app.focus = Focus::Article;
+
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.focus, Focus::Entries);
     }
 }

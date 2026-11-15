@@ -121,7 +121,7 @@ make it stick.
 | `PgUp` / `PgDn` | Page up / down |
 | `Ctrl-f` / `Ctrl-b` | Full page down / up |
 | `Enter` | Confirm: feeds → entries, entries → reader |
-| `Esc` | Go back one pane |
+| `Esc` | Clear the active search, or go back one pane |
 | `q` | Quit |
 
 ### Reading
