@@ -148,6 +148,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Keep the status line and key bar visible while editing.
         draw_feed_editor(frame, app, rows[1], &pal);
         draw_category_picker(frame, app, rows[1], &pal);
+        draw_feed_delete_confirm(frame, app, rows[1], &pal);
     }
 }
 
@@ -776,6 +777,10 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
             &[("j/k", "preview"), ("Enter", "apply"), ("Esc", "cancel")]
         }
         Mode::EditFeed {
+            confirm_delete: true,
+            ..
+        } => &[("y", "unsubscribe"), ("n", "cancel")],
+        Mode::EditFeed {
             category_picker: Some(_),
             ..
         } => &[("j/k", "select"), ("Enter", "choose"), ("Esc", "cancel")],
@@ -787,6 +792,7 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
             ("Enter", "edit/change"),
             ("h/l", "change"),
             ("Ctrl-s", "save"),
+            ("d", "unsubscribe"),
             ("Esc", "cancel"),
         ],
         Mode::Normal => match app.focus {
@@ -1225,6 +1231,7 @@ fn draw_feed_editor(
         cursor,
         editing,
         category_picker,
+        confirm_delete,
         ..
     } = &app.mode
     else {
@@ -1232,7 +1239,7 @@ fn draw_feed_editor(
     };
     let cursor = (*cursor).min(FeedField::ALL.len() - 1);
     let editing = *editing;
-    let category_picker_open = category_picker.is_some();
+    let overlay_open = category_picker.is_some() || *confirm_delete;
 
     let area = centered_rect(80, 92, area);
     frame.render_widget(Clear, area);
@@ -1291,7 +1298,7 @@ fn draw_feed_editor(
         area,
     );
 
-    if inner.width > 0 && inner.height > 0 && !category_picker_open {
+    if inner.width > 0 && inner.height > 0 && !overlay_open {
         let field = FeedField::ALL[cursor];
         let (value, _) = feed_field_value(app, form, field, editing);
         let shown = if editing {
@@ -1359,6 +1366,69 @@ fn draw_category_picker(
         .highlight_symbol("▸ ");
 
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_feed_delete_confirm(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    pal: &Palette,
+) {
+    let Mode::EditFeed {
+        form,
+        confirm_delete: true,
+        ..
+    } = &app.mode
+    else {
+        return;
+    };
+
+    let width = ((u32::from(area.width) * 60 / 100) as u16)
+        .max(24)
+        .min(area.width.saturating_sub(2));
+    let height = 7_u16.min(area.height.saturating_sub(2));
+    let area = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, area);
+
+    let warning = Style::default().fg(pal.color(tokens::WARNING));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(warning)
+        .style(pal.panel())
+        .title_top(Line::from(Span::styled(
+            " Unsubscribe ",
+            warning.add_modifier(Modifier::BOLD),
+        )));
+
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            util::truncate(
+                &format!("Delete “{}” and its entries?", form.title),
+                area.width.saturating_sub(4) as usize,
+            ),
+            pal.text(),
+        ))
+        .alignment(Alignment::Center),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[y]", pal.key()),
+            Span::raw(" unsubscribe    "),
+            Span::styled("[n]", pal.key()),
+            Span::raw(" cancel"),
+        ])
+        .alignment(Alignment::Center),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(text).style(pal.panel()).block(block),
+        area,
+    );
 }
 
 fn draw_theme_picker(
@@ -1566,6 +1636,7 @@ mod tests {
                 cursor: 8,
                 editing: true,
                 category_picker: None,
+                confirm_delete: false,
             },
             Mode::EditFeed {
                 feed_id: FeedID(7),
@@ -1573,6 +1644,15 @@ mod tests {
                 cursor: 1,
                 editing: false,
                 category_picker: Some(1),
+                confirm_delete: false,
+            },
+            Mode::EditFeed {
+                feed_id: FeedID(7),
+                form: Box::new(editor_form()),
+                cursor: 0,
+                editing: false,
+                category_picker: None,
+                confirm_delete: true,
             },
         ];
         for mode in modes {
@@ -1673,6 +1753,7 @@ mod tests {
             cursor: 0,
             editing: false,
             category_picker: None,
+            confirm_delete: false,
         };
 
         let text = render_text(&mut app, 100, 30);
@@ -1699,6 +1780,7 @@ mod tests {
             cursor: 1,
             editing: false,
             category_picker: Some(1),
+            confirm_delete: false,
         };
 
         let text = render_text(&mut app, 80, 24);
@@ -1706,5 +1788,27 @@ mod tests {
         assert!(text.contains("Choose category"), "{text:?}");
         assert!(text.contains("News"), "{text:?}");
         assert!(text.contains("Tech"), "{text:?}");
+    }
+
+    #[test]
+    fn unsubscribe_confirm_renders_the_prompt() {
+        let mut app = test_app();
+        let mut form = editor_form();
+        form.title = "Example feed".to_string();
+        app.mode = Mode::EditFeed {
+            feed_id: FeedID(7),
+            form: Box::new(form),
+            cursor: 0,
+            editing: false,
+            category_picker: None,
+            confirm_delete: true,
+        };
+
+        let text = render_text(&mut app, 80, 24);
+
+        assert!(text.contains("Unsubscribe"), "{text:?}");
+        assert!(text.contains("and its entries?"), "{text:?}");
+        assert!(text.contains("[y]"), "{text:?}");
+        assert!(text.contains("[n]"), "{text:?}");
     }
 }

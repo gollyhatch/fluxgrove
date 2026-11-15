@@ -86,6 +86,9 @@ pub enum ApiCommand {
         id: FeedID,
         changes: Box<FeedUpdate>,
     },
+    DeleteFeed {
+        id: FeedID,
+    },
     MarkAllRead {
         scope: MarkAllScope,
     },
@@ -123,6 +126,9 @@ pub enum ApiEvent {
         feed_id: FeedID,
     },
     FeedUpdated(Box<Feed>),
+    FeedDeleted {
+        feed_id: FeedID,
+    },
     MarkedAllRead,
     Error {
         context: String,
@@ -334,6 +340,20 @@ impl ApiClient {
                     }
                     Err(error) => {
                         send_error(events, "Could not update the feed", error);
+                    }
+                }
+            }
+            ApiCommand::DeleteFeed { id } => {
+                match self.api.delete_feed(id, &self.http).await {
+                    Ok(()) => {
+                        send(events, ApiEvent::FeedDeleted { feed_id: id })
+                    }
+                    Err(error) => {
+                        send_error(
+                            events,
+                            "Could not unsubscribe from the feed",
+                            error,
+                        );
                     }
                 }
             }
@@ -765,6 +785,47 @@ mod tests {
         assert_eq!(payload["keeplist_rules"], "keep-me");
         assert_eq!(payload["ignore_http_cache"], true);
         assert_eq!(payload["fetch_via_proxy"], true);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_feed_reports_its_id() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let (headers, _body) = read_http_request(&mut socket).await;
+            let request_line =
+                headers.lines().next().unwrap_or_default().to_string();
+            socket
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write response");
+            request_line
+        });
+
+        let client =
+            ApiClient::new(&test_config(&format!("http://{address}/")))
+                .expect("api client");
+        let (events, mut received) = mpsc::unbounded_channel();
+        client
+            .run(ApiCommand::DeleteFeed { id: FeedID(42) }, &events)
+            .await;
+
+        let event = received.recv().await.expect("an event");
+        assert!(
+            matches!(event, ApiEvent::FeedDeleted { feed_id } if feed_id == FeedID(42)),
+            "unexpected event: {event:?}"
+        );
+
+        let request_line = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server finished")
+            .expect("server task");
+        assert_eq!(request_line, "DELETE /v1/feeds/42 HTTP/1.1");
     }
 
     #[test]

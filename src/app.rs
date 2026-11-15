@@ -260,6 +260,16 @@ impl FeedForm {
     }
 }
 
+/// Editor state passed between key handling steps.
+struct FeedEditorState {
+    feed_id: FeedID,
+    form: Box<FeedForm>,
+    cursor: usize,
+    editing: bool,
+    category_picker: Option<usize>,
+    confirm_delete: bool,
+}
+
 #[derive(Debug)]
 pub enum ConfirmAction {
     MarkAllRead(MarkAllScope),
@@ -297,6 +307,7 @@ pub enum Mode {
         cursor: usize,
         editing: bool,
         category_picker: Option<usize>,
+        confirm_delete: bool,
     },
 }
 
@@ -638,13 +649,17 @@ impl App {
                         cursor,
                         editing,
                         category_picker,
+                        confirm_delete,
                     } => self.handle_feed_editor(
                         key,
-                        feed_id,
-                        form,
-                        cursor,
-                        editing,
-                        category_picker,
+                        FeedEditorState {
+                            feed_id,
+                            form,
+                            cursor,
+                            editing,
+                            category_picker,
+                            confirm_delete,
+                        },
                     ),
                 }
             }
@@ -1193,6 +1208,7 @@ impl App {
             cursor: 0,
             editing: false,
             category_picker: None,
+            confirm_delete: false,
         };
         self.set_status(StatusKind::Info, "Editing the feed; Ctrl-s saves");
     }
@@ -1229,17 +1245,47 @@ impl App {
     fn handle_feed_editor(
         &mut self,
         key: crossterm::event::KeyEvent,
-        feed_id: FeedID,
-        mut form: Box<FeedForm>,
-        mut cursor: usize,
-        mut editing: bool,
-        mut category_picker: Option<usize>,
+        state: FeedEditorState,
     ) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
+        let FeedEditorState {
+            feed_id,
+            mut form,
+            mut cursor,
+            mut editing,
+            mut category_picker,
+            mut confirm_delete,
+        } = state;
         let last = FeedField::ALL.len() - 1;
         cursor = cursor.min(last);
         let field = FeedField::ALL[cursor];
+
+        if confirm_delete {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    self.mode = Mode::Normal;
+                    self.set_status(StatusKind::Info, "Unsubscribing…");
+                    self.send(ApiCommand::DeleteFeed { id: feed_id });
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    confirm_delete = false;
+                }
+                _ => {}
+            }
+            self.mode = Mode::EditFeed {
+                feed_id,
+                form,
+                cursor,
+                editing,
+                category_picker,
+                confirm_delete,
+            };
+            self.dirty = true;
+            return;
+        }
 
         if let Some(mut picker) = category_picker {
             let categories = self.sorted_categories();
@@ -1269,6 +1315,7 @@ impl App {
                 cursor,
                 editing,
                 category_picker: if close { None } else { Some(picker) },
+                confirm_delete,
             };
             self.dirty = true;
             return;
@@ -1322,6 +1369,7 @@ impl App {
                 cursor,
                 editing,
                 category_picker: None,
+                confirm_delete: false,
             };
             self.dirty = true;
             return;
@@ -1367,6 +1415,7 @@ impl App {
                 _ if field.is_toggle() => form.toggle(field),
                 _ => editing = true,
             },
+            KeyCode::Char('d') => confirm_delete = true,
             KeyCode::Char('h') | KeyCode::Left => {
                 self.adjust_feed_field(&mut form, field, false);
             }
@@ -1382,6 +1431,7 @@ impl App {
             cursor,
             editing,
             category_picker,
+            confirm_delete,
         };
         self.dirty = true;
     }
@@ -2026,6 +2076,29 @@ impl App {
                     StatusKind::Success,
                     format!("Updated “{title}”"),
                 );
+            }
+            ApiEvent::FeedDeleted { feed_id } => {
+                let title = self
+                    .feeds
+                    .iter()
+                    .find(|feed| feed.id == feed_id)
+                    .map(|feed| feed.title.clone())
+                    .unwrap_or_else(|| "feed".to_string());
+                self.feeds.retain(|feed| feed.id != feed_id);
+                self.counters.unreads.remove(&feed_id);
+                self.counters.reads.remove(&feed_id);
+                if matches!(
+                    &self.mode,
+                    Mode::EditFeed { feed_id: open, .. } if *open == feed_id
+                ) {
+                    self.mode = Mode::Normal;
+                }
+                self.sync_sidebar_cursor();
+                self.set_status(
+                    StatusKind::Success,
+                    format!("Unsubscribed from “{title}”"),
+                );
+                self.load_entries(true);
             }
             ApiEvent::MarkedAllRead => {
                 self.loading = true;
@@ -3129,6 +3202,84 @@ mod tests {
         assert!(!changes.disabled);
         assert!(!changes.ignore_http_cache);
         assert!(!changes.fetch_via_proxy);
+    }
+
+    #[test]
+    fn feed_editor_unsubscribe_requires_confirmation() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        press(&mut app, KeyCode::Char('E'));
+
+        press(&mut app, KeyCode::Char('d'));
+        assert!(matches!(
+            app.mode,
+            Mode::EditFeed {
+                confirm_delete: true,
+                ..
+            }
+        ));
+
+        press(&mut app, KeyCode::Char('n'));
+        assert!(matches!(
+            app.mode,
+            Mode::EditFeed {
+                confirm_delete: false,
+                ..
+            }
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn feed_editor_unsubscribe_sends_delete() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        press(&mut app, KeyCode::Char('E'));
+
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('y'));
+
+        assert!(matches!(app.mode, Mode::Normal));
+        let command = rx.try_recv().expect("delete-feed command");
+        assert!(matches!(
+            command,
+            ApiCommand::DeleteFeed { id } if id == FeedID(7)
+        ));
+    }
+
+    #[test]
+    fn feed_deleted_removes_the_feed_and_refreshes_the_view() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.bootstrapped = true;
+        app.counters.unreads.insert(FeedID(7), 2);
+        app.selection = Selection::Feed(FeedID(7));
+        press(&mut app, KeyCode::Char('E'));
+
+        app.handle_api(ApiEvent::FeedDeleted { feed_id: FeedID(7) });
+
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.feeds.is_empty());
+        assert!(!app.counters.unreads.contains_key(&FeedID(7)));
+        assert_eq!(app.selection, Selection::Unread);
+        let command = rx.try_recv().expect("load-entries command");
+        assert!(matches!(command, ApiCommand::LoadEntries { .. }));
+    }
+
+    #[test]
+    fn feed_deleted_keeps_another_feeds_editor_open() {
+        let (mut app, _rx) = test_app_with_feed();
+        app.feeds.push(render_feed(9, "Other", 1));
+        app.selection = Selection::Feed(FeedID(7));
+        press(&mut app, KeyCode::Char('E'));
+
+        app.handle_api(ApiEvent::FeedDeleted { feed_id: FeedID(9) });
+
+        assert!(matches!(
+            app.mode,
+            Mode::EditFeed { feed_id, .. } if feed_id == FeedID(7)
+        ));
+        assert!(app.feeds.iter().any(|feed| feed.id == FeedID(7)));
     }
 
     #[test]
