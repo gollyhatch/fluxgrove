@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use miniflux_api::models::{
     Category, CategoryID, Entry, EntryID, EntryStatus, Feed, FeedCounters,
@@ -329,6 +332,14 @@ pub enum StatusKind {
     Error,
 }
 
+/// Load state of an image embedded in the reader.
+#[derive(Debug)]
+pub enum LoadedImage {
+    Loading,
+    Ready(api::DecodedImage),
+    Failed,
+}
+
 #[derive(Debug)]
 pub struct StatusMessage {
     pub kind: StatusKind,
@@ -370,6 +381,9 @@ pub struct App {
     pub bootstrapped: bool,
 
     pub article_text: String,
+    pub article_parts: Vec<util::ArticlePart>,
+    pub images: HashMap<String, LoadedImage>,
+    pub show_images: bool,
     pub article_entry: Option<EntryID>,
     pub article_scroll: u16,
     pub article_max_scroll: u16,
@@ -399,6 +413,7 @@ impl App {
         theme_choices.sort_by_key(|(_, name)| name.to_lowercase());
         let hide_read_feeds = config.hide_read_feeds;
         let hide_read_entries = config.hide_read_entries;
+        let show_images = config.images;
 
         let mut app = Self {
             config,
@@ -429,6 +444,9 @@ impl App {
             spinner: 0,
             bootstrapped: false,
             article_text: String::new(),
+            article_parts: Vec::new(),
+            images: HashMap::new(),
+            show_images,
             article_entry: None,
             article_scroll: 0,
             article_max_scroll: 0,
@@ -479,6 +497,8 @@ impl App {
             self.entry_state.select(None);
             self.total_entries = None;
             self.article_text.clear();
+            self.article_parts.clear();
+            self.images.clear();
             self.article_entry = None;
             self.article_scroll = 0;
         }
@@ -764,6 +784,7 @@ impl App {
             KeyCode::Char('M') => self.mark_view_read(),
             KeyCode::Char('E') => self.edit_selected_feed(),
             KeyCode::Char('p') => self.jump_to_entry_feed(),
+            KeyCode::Char('i') => self.toggle_images(),
             KeyCode::Char('s') => self.toggle_star(),
             KeyCode::Char('J') if self.focus == Focus::Article => {
                 self.open_relative_article(1);
@@ -2237,6 +2258,15 @@ impl App {
                 );
                 self.send(ApiCommand::Bootstrap);
             }
+            ApiEvent::ImageLoaded { url, result } => {
+                if self.images.contains_key(&url) {
+                    let state = match result {
+                        Ok(image) => LoadedImage::Ready(image),
+                        Err(_) => LoadedImage::Failed,
+                    };
+                    self.images.insert(url, state);
+                }
+            }
             ApiEvent::Error { context, message } => {
                 self.loading = false;
                 self.set_status(
@@ -2325,6 +2355,43 @@ impl App {
         true
     }
 
+    fn toggle_images(&mut self) {
+        self.show_images = !self.show_images;
+        if self.show_images {
+            self.request_article_images();
+        }
+        self.set_status(
+            StatusKind::Info,
+            if self.show_images {
+                "Showing images"
+            } else {
+                "Hiding images"
+            },
+        );
+        self.dirty = true;
+    }
+
+    fn request_article_images(&mut self) {
+        if !self.show_images {
+            return;
+        }
+        let urls: Vec<String> = self
+            .article_parts
+            .iter()
+            .filter_map(|part| match part {
+                util::ArticlePart::Image { url, .. } => Some(url.clone()),
+                util::ArticlePart::Text(_) => None,
+            })
+            .collect();
+        for url in urls {
+            if self.images.contains_key(&url) {
+                continue;
+            }
+            self.images.insert(url.clone(), LoadedImage::Loading);
+            self.send(ApiCommand::LoadImage { url });
+        }
+    }
+
     pub fn ensure_article(&mut self) {
         let selected = self
             .selected_entry()
@@ -2334,12 +2401,19 @@ impl App {
             Some((id, _content)) if self.article_entry == Some(id) => {}
             Some((id, content)) => {
                 self.article_entry = Some(id);
-                self.article_text = util::html_to_text(&content);
+                let text = util::html_to_text(&content);
+                self.article_parts = util::article_parts(&text);
+                self.article_text =
+                    util::article_plain_text(&self.article_parts);
+                self.images.clear();
                 self.article_scroll = 0;
+                self.request_article_images();
             }
             None => {
                 self.article_entry = None;
                 self.article_text.clear();
+                self.article_parts.clear();
+                self.images.clear();
                 self.article_scroll = 0;
             }
         }
@@ -2404,6 +2478,7 @@ mod tests {
             mark_read: true,
             hide_read_feeds: false,
             hide_read_entries: false,
+            images: false,
         }
     }
 
@@ -3745,5 +3820,91 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.feed_filter, "exam");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn i_toggles_images_and_requests_them() {
+        let (mut app, mut rx) = test_app();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.article_parts = vec![util::ArticlePart::Image {
+            url: "https://example.com/a.png".to_string(),
+            alt: "A".to_string(),
+        }];
+
+        press(&mut app, KeyCode::Char('i'));
+
+        assert!(app.show_images);
+        assert!(matches!(
+            app.images.get("https://example.com/a.png"),
+            Some(LoadedImage::Loading)
+        ));
+        let command = rx.try_recv().expect("load-image command");
+        assert!(matches!(
+            command,
+            ApiCommand::LoadImage { url }
+                if url == "https://example.com/a.png"
+        ));
+
+        press(&mut app, KeyCode::Char('i'));
+        assert!(!app.show_images);
+    }
+
+    #[test]
+    fn images_start_from_the_config() {
+        let mut config = test_config();
+        config.images = true;
+        let (app, _rx) = test_app_from(config);
+
+        assert!(app.show_images);
+    }
+
+    #[test]
+    fn an_loaded_image_is_kept() {
+        let (mut app, _rx) = test_app();
+        let url = "https://example.com/a.png".to_string();
+        app.images.insert(url.clone(), LoadedImage::Loading);
+
+        app.handle_api(ApiEvent::ImageLoaded {
+            url: url.clone(),
+            result: Ok(api::DecodedImage {
+                width: 1,
+                height: 1,
+                rgba: vec![255, 0, 0, 255],
+            }),
+        });
+
+        assert!(matches!(
+            app.images.get(&url),
+            Some(LoadedImage::Ready(image)) if image.width == 1
+        ));
+    }
+
+    #[test]
+    fn preparing_an_article_collects_its_images() {
+        let (mut app, mut rx) = test_app();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.show_images = true;
+        let mut entry = render_entry(42, "unread");
+        entry.content = "<p>Before</p>\
+             <img src=\"https://example.com/pic.png\" alt=\"Pic\">\
+             <p>After</p>"
+            .to_string();
+        app.entries = vec![entry];
+        app.entry_cursor = 0;
+
+        app.ensure_article();
+
+        assert!(app.article_text.contains("Before"));
+        assert!(app.article_parts.iter().any(|part| matches!(
+            part,
+            util::ArticlePart::Image { url, alt }
+                if url == "https://example.com/pic.png" && alt == "Pic"
+        )));
+        let command = rx.try_recv().expect("load-image command");
+        assert!(matches!(
+            command,
+            ApiCommand::LoadImage { url }
+                if url == "https://example.com/pic.png"
+        ));
     }
 }

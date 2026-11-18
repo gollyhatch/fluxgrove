@@ -18,6 +18,17 @@ use crate::{
     util,
 };
 
+/// Upper bound for a single embedded image.
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// A decoded image ready to be drawn in the reader.
+#[derive(Debug, Clone)]
+pub struct DecodedImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub struct BootstrapData {
     pub feeds: Vec<Feed>,
@@ -95,6 +106,9 @@ pub enum ApiCommand {
     MarkAllRead {
         scope: MarkAllScope,
     },
+    LoadImage {
+        url: String,
+    },
     Refresh,
 }
 
@@ -133,6 +147,10 @@ pub enum ApiEvent {
         feed_id: FeedID,
     },
     MarkedAllRead,
+    ImageLoaded {
+        url: String,
+        result: Result<DecodedImage, String>,
+    },
     Error {
         context: String,
         message: String,
@@ -173,6 +191,42 @@ impl ApiClient {
             http,
             base_url: config.url.clone(),
             auth: config.auth.clone(),
+        })
+    }
+
+    /// Fetch and decode an image embedded in an article.
+    async fn load_image(&self, url: &str) -> Result<DecodedImage> {
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .context("could not fetch the image")?;
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!("image request failed (HTTP {status})");
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_IMAGE_BYTES)
+        {
+            anyhow::bail!("image is larger than {MAX_IMAGE_BYTES} bytes");
+        }
+        let bytes =
+            response.bytes().await.context("could not read the image")?;
+        if bytes.len() as u64 > MAX_IMAGE_BYTES {
+            anyhow::bail!("image is larger than {MAX_IMAGE_BYTES} bytes");
+        }
+        let rgba = tokio::task::spawn_blocking(move || {
+            image::load_from_memory(&bytes).map(|image| image.to_rgba8())
+        })
+        .await
+        .context("the image decoding task failed")?
+        .context("could not decode the image")?;
+        Ok(DecodedImage {
+            width: rgba.width(),
+            height: rgba.height(),
+            rgba: rgba.into_raw(),
         })
     }
 
@@ -428,6 +482,13 @@ impl ApiClient {
                     ),
                 }
             }
+            ApiCommand::LoadImage { url } => {
+                let result = match self.load_image(&url).await {
+                    Ok(image) => Ok(image),
+                    Err(error) => Err(error.to_string()),
+                };
+                send(events, ApiEvent::ImageLoaded { url, result });
+            }
             ApiCommand::Refresh => {
                 if let Err(error) = self.api.refresh_all_feeds(&self.http).await
                 {
@@ -568,6 +629,7 @@ mod tests {
             mark_read: true,
             hide_read_feeds: false,
             hide_read_entries: false,
+            images: false,
         }
     }
 
@@ -869,6 +931,67 @@ mod tests {
             .expect("server finished")
             .expect("server task");
         assert_eq!(request_line, "DELETE /v1/feeds/42 HTTP/1.1");
+    }
+
+    #[tokio::test]
+    async fn loading_an_image_decodes_it() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(2, 1, image::Rgba([10, 20, 30, 255]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut png),
+                image::ImageFormat::Png,
+            )
+            .expect("encode PNG");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let (headers, _body) = read_http_request(&mut socket).await;
+            let request_line =
+                headers.lines().next().unwrap_or_default().to_string();
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                png.len()
+            );
+            socket
+                .write_all(reply.as_bytes())
+                .await
+                .expect("write headers");
+            socket.write_all(&png).await.expect("write image");
+            request_line
+        });
+
+        let client =
+            ApiClient::new(&test_config(&format!("http://{address}/")))
+                .expect("api client");
+        let url = format!("http://{address}/pic.png");
+        let (events, mut received) = mpsc::unbounded_channel();
+        client
+            .run(ApiCommand::LoadImage { url: url.clone() }, &events)
+            .await;
+
+        match received.recv().await.expect("an event") {
+            ApiEvent::ImageLoaded {
+                url: loaded,
+                result,
+            } => {
+                assert_eq!(loaded, url);
+                let image = result.expect("decoded image");
+                assert_eq!((image.width, image.height), (2, 1));
+                assert_eq!(image.rgba.len(), 8);
+                assert_eq!(&image.rgba[0..4], &[10, 20, 30, 255]);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let request_line = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server finished")
+            .expect("server task");
+        assert_eq!(request_line, "GET /pic.png HTTP/1.1");
     }
 
     #[tokio::test]

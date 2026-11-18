@@ -25,6 +25,8 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
 - Vim motions: `j`/`k`, `h`/`l`, `g`/`G`, `Ctrl-d`/`Ctrl-u`, `Ctrl-f`/`Ctrl-b`.
 - Entry list shows the article title plus feed / age / reading time.
 - Long titles wrap to the available width instead of being clipped.
+- Embedded article images in the reading view, drawn with block graphics and
+  toggled with `i` (off by default; set `images = true` to start enabled).
 - Save articles to a configured Miniflux integration with `S`.
 - Fetch and display the original article content with `F`.
 - Hide feeds with no unread items, or read articles, with `f` depending on the
@@ -84,6 +86,7 @@ limit = 100             # entries fetched per view (1-500)
 mark_read = true        # mark an entry read when you open it in the reader
 hide_read_feeds = false  # hide feeds with no unread items by default
 hide_read_entries = false # hide read articles in the entries panel by default
+images = false           # start with embedded images shown (toggle in-app with i)
 ```
 
 Generate an API token in Miniflux under **Settings → API Keys**.
@@ -142,6 +145,7 @@ make it stick.
 
 | Key | Action |
 | --- | --- |
+| `i` | Show or hide embedded images in the reader (default off) |
 | `m` | Toggle read / unread (marking read advances to the next entry) |
 | `M` | Mark every entry in the current view as read |
 | `J` / `K` | Next / previous article while the reader is focused; marks it read |

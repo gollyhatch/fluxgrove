@@ -4,6 +4,56 @@ use chrono::{DateTime, Datelike, Local, Utc};
 use html2text::render::TextDecorator;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// Marks where an image reference was in the rendered article text.
+pub const IMAGE_MARKER: char = '\u{fffc}';
+/// Separates an image URL from its alt text inside a marker.
+const IMAGE_SEPARATOR: char = '|';
+
+/// A piece of the reading view: article text or an embedded image.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArticlePart {
+    Text(String),
+    Image { url: String, alt: String },
+}
+
+/// Split rendered article text into text runs and image references.
+///
+/// [`html_to_text`] replaces every image with a marker holding its source and
+/// alt text, so the reader can lay the image out where it appeared.
+pub fn article_parts(text: &str) -> Vec<ArticlePart> {
+    let mut parts = Vec::new();
+    let mut is_image = false;
+    for segment in text.split(IMAGE_MARKER) {
+        if is_image {
+            let (url, alt) =
+                segment.split_once(IMAGE_SEPARATOR).unwrap_or((segment, ""));
+            if !url.is_empty() {
+                parts.push(ArticlePart::Image {
+                    url: url.to_string(),
+                    alt: alt.to_string(),
+                });
+            }
+        } else if !segment.is_empty() {
+            parts.push(ArticlePart::Text(segment.to_string()));
+        }
+        is_image = !is_image;
+    }
+    parts
+}
+
+/// The article as plain text, ignoring images.
+pub fn article_plain_text(parts: &[ArticlePart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            ArticlePart::Text(text) => Some(text.as_str()),
+            ArticlePart::Image { .. } => None,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// Decode HTML entities in feed-provided text such as titles.
 pub fn decode_entities(text: &str) -> String {
     if !text.contains('&') {
@@ -92,10 +142,15 @@ impl TextDecorator for ArticleDecorator {
 
     fn decorate_image(
         &mut self,
-        _src: &str,
+        src: &str,
         title: &str,
     ) -> (String, Self::Annotation) {
-        (title.to_string(), ())
+        (
+            format!(
+                "{IMAGE_MARKER}{src}{IMAGE_SEPARATOR}{title}{IMAGE_MARKER}"
+            ),
+            (),
+        )
     }
 
     fn header_prefix(&self, _level: usize) -> String {
@@ -402,6 +457,36 @@ mod tests {
     fn truncates_wide_text() {
         assert_eq!(truncate("hello", 3), "he…");
         assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn splits_images_out_of_the_article_text() {
+        let text = html_to_text(
+            "<p>Before</p><img src=\"https://example.com/a.png\" \
+             alt=\"A picture\"><p>After</p>",
+        );
+        let parts = article_parts(&text);
+
+        assert!(
+            matches!(&parts[0], ArticlePart::Text(text) if text.contains("Before")),
+            "{parts:?}"
+        );
+        assert!(
+            parts.iter().any(|part| matches!(
+                part,
+                ArticlePart::Image { url, alt }
+                    if url == "https://example.com/a.png"
+                        && alt == "A picture"
+            )),
+            "{parts:?}"
+        );
+        assert!(
+            parts.iter().any(
+                |part| matches!(part, ArticlePart::Text(text) if text.contains("After"))
+            ),
+            "{parts:?}"
+        );
+        assert!(!article_plain_text(&parts).contains(IMAGE_MARKER));
     }
 
     #[test]

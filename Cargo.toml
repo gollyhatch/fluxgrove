@@ -16,6 +16,13 @@ dirs = "6"
 futures-util = "0.3"
 html-escape = "0.3"
 html2text = "0.17"
+image = { version = "0.25", default-features = false, features = [
+    "bmp",
+    "gif",
+    "jpeg",
+    "png",
+    "webp",
+] }
 miniflux_api = "0.9"
 opaline = { version = "0.4", features = ["builtin-themes", "ratatui"] }
 ratatui = "0.30"

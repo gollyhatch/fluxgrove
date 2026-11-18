@@ -12,9 +12,10 @@ use ratatui::{
 };
 
 use crate::{
+    api,
     app::{
-        App, FeedField, FeedForm, Focus, Mode, SearchScope, SidebarRow,
-        StatusKind,
+        App, FeedField, FeedForm, Focus, LoadedImage, Mode, SearchScope,
+        SidebarRow, StatusKind,
     },
     util,
 };
@@ -598,14 +599,79 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     )));
     lines.push(Line::from(""));
 
-    if app.article_text.trim().is_empty() {
+    let mut images: Vec<ImagePlacement> = Vec::new();
+    if app.article_parts.is_empty() {
         lines.push(Line::from(Span::styled(
             "No content available. Press o to open the original article.",
             pal.dim(),
         )));
     } else {
-        for line in util::wrap_text(&app.article_text, inner_width) {
-            lines.push(Line::from(line));
+        let max_image_rows = (inner_height / 2).max(1);
+        for part in &app.article_parts {
+            match part {
+                util::ArticlePart::Text(text) => {
+                    for line in util::wrap_text(text, inner_width) {
+                        lines.push(Line::from(line));
+                    }
+                }
+                util::ArticlePart::Image { url, alt } => {
+                    let label = if alt.trim().is_empty() { url } else { alt };
+                    let start = lines.len();
+                    if !app.show_images {
+                        lines.push(Line::from(Span::styled(
+                            util::truncate(
+                                &format!("[image] {label}"),
+                                inner_width,
+                            ),
+                            pal.dim(),
+                        )));
+                        continue;
+                    }
+                    match app.images.get(url) {
+                        Some(LoadedImage::Ready(image)) => {
+                            let (width, rows) = image_geometry(
+                                image,
+                                inner_width,
+                                max_image_rows,
+                            );
+                            lines.extend(
+                                std::iter::repeat_with(|| Line::from(""))
+                                    .take(rows),
+                            );
+                            images.push(ImagePlacement {
+                                url: url.clone(),
+                                start,
+                                width,
+                                rows,
+                            });
+                        }
+                        Some(LoadedImage::Loading) => {
+                            lines.push(Line::from(Span::styled(
+                                "Loading image…",
+                                pal.dim(),
+                            )));
+                        }
+                        Some(LoadedImage::Failed) => {
+                            lines.push(Line::from(Span::styled(
+                                util::truncate(
+                                    &format!("[image unavailable] {label}"),
+                                    inner_width,
+                                ),
+                                pal.dim(),
+                            )));
+                        }
+                        None => {
+                            lines.push(Line::from(Span::styled(
+                                util::truncate(
+                                    &format!("[image] {label}"),
+                                    inner_width,
+                                ),
+                                pal.dim(),
+                            )));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -630,6 +696,122 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
         .block(block);
 
     frame.render_widget(paragraph, area);
+
+    for placement in &images {
+        if let Some(LoadedImage::Ready(image)) = app.images.get(&placement.url)
+        {
+            render_article_image(frame, image, placement, scroll, area, pal);
+        }
+    }
+}
+
+/// Where an image sits inside the reader's line-based content.
+struct ImagePlacement {
+    url: String,
+    start: usize,
+    width: usize,
+    rows: usize,
+}
+
+/// Fit an image into the reader width and at most `max_rows` rows.
+fn image_geometry(
+    image: &api::DecodedImage,
+    max_width: usize,
+    max_rows: usize,
+) -> (usize, usize) {
+    let max_width = max_width.max(1);
+    let max_rows = max_rows.max(1);
+    let src_w = image.width.max(1) as f64;
+    let src_h = image.height.max(1) as f64;
+    let mut width = max_width as f64;
+    let mut rows = (width * src_h / src_w / 2.0).ceil();
+    if rows > max_rows as f64 {
+        rows = max_rows as f64;
+        width = rows * 2.0 * src_w / src_h;
+    }
+    let width = (width.round() as usize).clamp(1, max_width);
+    let rows = (rows.round() as usize).clamp(1, max_rows);
+    (width, rows)
+}
+
+fn render_article_image(
+    frame: &mut Frame,
+    image: &api::DecodedImage,
+    placement: &ImagePlacement,
+    scroll: u16,
+    area: Rect,
+    pal: &Palette,
+) {
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let offset = placement.start as isize - scroll as isize;
+    let first = offset.max(0) as usize;
+    let last = (offset + placement.rows as isize)
+        .clamp(0, inner_height as isize) as usize;
+    if last <= first {
+        return;
+    }
+
+    let background = pal.color(tokens::BG_PANEL);
+    let buffer = frame.buffer_mut();
+    for screen_row in first..last {
+        let image_row = (screen_row as isize - offset) as usize;
+        let y = area.y + 1 + screen_row as u16;
+        for x in 0..placement.width {
+            let top = blend_pixel(
+                sample_image(image, placement, x, image_row * 2),
+                background,
+            );
+            let bottom = blend_pixel(
+                sample_image(image, placement, x, image_row * 2 + 1),
+                background,
+            );
+            if let Some(cell) = buffer.cell_mut((area.x + 1 + x as u16, y)) {
+                cell.set_symbol("▀");
+                cell.set_fg(top);
+                cell.set_bg(bottom);
+            }
+        }
+    }
+}
+
+/// Nearest-neighbour sample of the source image at a destination pixel.
+fn sample_image(
+    image: &api::DecodedImage,
+    placement: &ImagePlacement,
+    x: usize,
+    y: usize,
+) -> [u8; 4] {
+    let src_w = image.width.max(1) as u64;
+    let src_h = image.height.max(1) as u64;
+    let dst_w = placement.width.max(1) as u64;
+    let dst_h = (placement.rows * 2).max(1) as u64;
+    let sx = (x as u64 * src_w / dst_w).min(src_w - 1);
+    let sy = (y as u64 * src_h / dst_h).min(src_h - 1);
+    let index = ((sy * src_w + sx) * 4) as usize;
+    image
+        .rgba
+        .get(index..index + 4)
+        .map_or([0, 0, 0, 0], |pixel| {
+            [pixel[0], pixel[1], pixel[2], pixel[3]]
+        })
+}
+
+/// Blend a pixel over the panel background when it is translucent.
+fn blend_pixel(pixel: [u8; 4], background: Color) -> Color {
+    let [red, green, blue, alpha] = pixel;
+    if alpha == 255 {
+        return Color::Rgb(red, green, blue);
+    }
+    let (bg_red, bg_green, bg_blue) = match background {
+        Color::Rgb(red, green, blue) => (red, green, blue),
+        _ => (0, 0, 0),
+    };
+    let alpha = u16::from(alpha);
+    let mix = |foreground: u8, backdrop: u8| {
+        ((u16::from(foreground) * alpha + u16::from(backdrop) * (255 - alpha))
+            / 255) as u8
+    };
+    Color::Rgb(mix(red, bg_red), mix(green, bg_green), mix(blue, bg_blue))
 }
 
 fn pane_block(
@@ -855,6 +1037,7 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
                 ("m", "read"),
                 ("M", "view read"),
                 ("p", "feed"),
+                ("i", "images"),
                 ("q", "quit"),
             ],
         },
@@ -1022,6 +1205,7 @@ fn help_rows() -> Vec<HelpRow> {
             "open the original article in the XDG default browser",
         ),
         Key("r", "ask Miniflux to refresh feeds"),
+        Key("i", "show or hide embedded images"),
         Section("Searching"),
         Key("/", "search entries, or filter feeds as you type"),
         Key("Enter", "apply the search"),
@@ -1530,6 +1714,7 @@ mod tests {
             mark_read: true,
             hide_read_feeds: false,
             hide_read_entries: false,
+            images: false,
         };
         let theme = opaline::builtins::load_by_name("catppuccin-mocha")
             .expect("builtin theme");
@@ -1886,5 +2071,33 @@ mod tests {
 
         let text = render_text(&mut app, 80, 24);
         assert!(text.contains("/rust"), "{text:?}");
+    }
+
+    #[test]
+    fn reader_renders_images_when_enabled() {
+        let mut app = test_app();
+        app.entries = vec![probe_entry()];
+        app.entry_cursor = 0;
+        app.focus = Focus::Article;
+        app.article_parts = vec![util::ArticlePart::Image {
+            url: "https://example.com/pic.png".to_string(),
+            alt: "Pic".to_string(),
+        }];
+
+        app.show_images = false;
+        let text = render_text(&mut app, 80, 24);
+        assert!(text.contains("[image] Pic"), "{text:?}");
+
+        app.show_images = true;
+        app.images.insert(
+            "https://example.com/pic.png".to_string(),
+            LoadedImage::Ready(api::DecodedImage {
+                width: 4,
+                height: 4,
+                rgba: [255, 0, 0, 255].repeat(16),
+            }),
+        );
+        let text = render_text(&mut app, 80, 24);
+        assert!(text.contains("▀"), "the image was not drawn: {text:?}");
     }
 }

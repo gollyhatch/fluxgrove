@@ -90,6 +90,7 @@ pub struct Config {
     pub mark_read: bool,
     pub hide_read_feeds: bool,
     pub hide_read_entries: bool,
+    pub images: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -104,6 +105,7 @@ struct FileConfig {
     mark_read: Option<bool>,
     hide_read_feeds: Option<bool>,
     hide_read_entries: Option<bool>,
+    images: Option<bool>,
 }
 
 pub const DEFAULT_THEME: &str = "catppuccin-mocha";
@@ -205,6 +207,7 @@ impl Config {
             mark_read: file.mark_read.unwrap_or(true),
             hide_read_feeds: file.hide_read_feeds.unwrap_or(false),
             hide_read_entries: file.hide_read_entries.unwrap_or(false),
+            images: file.images.unwrap_or(false),
         })
     }
 }
@@ -278,6 +281,21 @@ mod tests {
             list_themes: false,
             command: None,
         }
+    }
+
+    #[test]
+    fn images_default_off_and_can_be_enabled() {
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"t\"\n",
+        );
+        let config = Config::load(&cli(Some(file.0.clone()))).expect("load");
+        assert!(!config.images);
+
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"t\"\nimages = true\n",
+        );
+        let config = Config::load(&cli(Some(file.0.clone()))).expect("load");
+        assert!(config.images);
     }
 
     #[test]

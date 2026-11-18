@@ -14,6 +14,9 @@ hide_read_feeds = false
 # Start with read articles hidden in the Entries panel.
 hide_read_entries = false
 
+# Start with images shown in the reading view. Press i to toggle them.
+images = false
+
 # Instead of a token you can use username/password authentication:
 # username = "demo"
 # password = "secret"
