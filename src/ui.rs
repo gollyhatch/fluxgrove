@@ -247,8 +247,8 @@ fn sidebar_item(
     let (icon, label, style, count) = match row {
         SidebarRow::All => (
             "◆",
-            "All entries".to_string(),
-            pal.strong(),
+            "Everything".to_string(),
+            Style::default().fg(pal.color(tokens::ACCENT_PRIMARY)),
             Some(app.unread_total()),
         ),
         SidebarRow::Unread => (
@@ -2281,5 +2281,45 @@ mod tests {
 
         assert!(!title_line.contains("A feed with"), "{title_line:?}");
         assert!(title_line.contains("for the editor"), "{title_line:?}");
+    }
+
+    #[test]
+    fn the_sidebar_shows_everything_instead_of_all_entries() {
+        let mut app = test_app();
+
+        let text = render_text(&mut app, 80, 24);
+
+        assert!(text.contains("Everything"), "{text:?}");
+        assert!(!text.contains("All entries"), "{text:?}");
+    }
+
+    #[test]
+    fn everything_is_highlighted_like_unread() {
+        let mut app = test_app();
+        // Highlight the Starred row so both icons keep their item styles.
+        app.sidebar_cursor = 2;
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw the frame");
+        let buffer = terminal.backend().buffer();
+
+        let mut unread = None;
+        let mut everything = None;
+        for y in 0..buffer.area().height {
+            for x in 0..buffer.area().width {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    match cell.symbol() {
+                        "●" => unread = Some(cell.fg),
+                        "◆" => everything = Some(cell.fg),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(unread.is_some(), "the Unread icon was not drawn");
+        assert_eq!(everything, unread);
     }
 }

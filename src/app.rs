@@ -790,7 +790,7 @@ impl App {
 
     pub fn selection_label(&self) -> String {
         match &self.selection {
-            Selection::All => "All entries".to_string(),
+            Selection::All => "Everything".to_string(),
             Selection::Unread => "Unread".to_string(),
             Selection::Starred => "Starred".to_string(),
             Selection::Category(id) => self
@@ -4130,5 +4130,13 @@ mod tests {
         press(&mut app, KeyCode::Enter);
 
         assert_eq!(app.search, "cust");
+    }
+
+    #[test]
+    fn the_all_view_is_called_everything() {
+        let (mut app, _rx) = test_app();
+        app.selection = Selection::All;
+
+        assert_eq!(app.selection_label(), "Everything");
     }
 }
