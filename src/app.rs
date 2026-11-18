@@ -499,6 +499,10 @@ pub enum Mode {
         category_picker: Option<usize>,
         confirm_delete: bool,
     },
+    RenameCategory {
+        category_id: CategoryID,
+        input: TextInput,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -890,6 +894,9 @@ impl App {
                             confirm_delete,
                         },
                     ),
+                    Mode::RenameCategory { category_id, input } => {
+                        self.handle_category_rename(key, category_id, input)
+                    }
                 }
             }
             Event::Resize(_, _) => self.dirty = true,
@@ -957,7 +964,7 @@ impl App {
             },
             KeyCode::Char('m') => self.toggle_read(),
             KeyCode::Char('M') => self.mark_view_read(),
-            KeyCode::Char('E') => self.edit_selected_feed(),
+            KeyCode::Char('E') => self.edit_selected(),
             KeyCode::Char('p') => self.jump_to_entry_feed(),
             KeyCode::Char('i') => self.toggle_images(),
             KeyCode::Char(' ') if self.focus == Focus::Article => {
@@ -1447,7 +1454,11 @@ impl App {
         };
     }
 
-    fn edit_selected_feed(&mut self) {
+    fn edit_selected(&mut self) {
+        if let Selection::Category(id) = self.selection {
+            self.open_category_rename(id);
+            return;
+        }
         // The selected entry wins, so `E` works from any view. Fall back to a
         // feed row when the entries pane is empty.
         let feed_id = self.selected_entry().map(|entry| entry.feed_id).or(
@@ -1506,6 +1517,57 @@ impl App {
             StatusKind::Info,
             format!("Showing “{}”", self.selection_label()),
         );
+    }
+
+    fn open_category_rename(&mut self, id: CategoryID) {
+        let Some(category) =
+            self.categories.iter().find(|category| category.id == id)
+        else {
+            self.set_status(StatusKind::Warning, "Category is not loaded");
+            return;
+        };
+        self.mode = Mode::RenameCategory {
+            category_id: id,
+            input: TextInput::new(category.title.clone()),
+        };
+        self.set_status(StatusKind::Info, "Renaming the category; Enter saves");
+    }
+
+    fn handle_category_rename(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        category_id: CategoryID,
+        mut input: TextInput,
+    ) {
+        use crossterm::event::KeyCode;
+
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.set_status(StatusKind::Info, "Category rename cancelled");
+                return;
+            }
+            KeyCode::Enter => {
+                let title = input.as_str().trim().to_string();
+                if title.is_empty() {
+                    self.set_status(
+                        StatusKind::Warning,
+                        "Give the category a name",
+                    );
+                } else {
+                    self.set_status(StatusKind::Info, "Renaming category…");
+                    self.send(ApiCommand::UpdateCategory {
+                        id: category_id,
+                        title,
+                    });
+                }
+            }
+            _ => {
+                apply_text_key(&mut input, key);
+            }
+        }
+        self.mode = Mode::RenameCategory { category_id, input };
+        self.dirty = true;
     }
 
     fn handle_feed_editor(
@@ -2362,6 +2424,28 @@ impl App {
                     "Marked all entries as read",
                 );
                 self.send(ApiCommand::Bootstrap);
+            }
+            ApiEvent::CategoryUpdated(category) => {
+                let id = category.id;
+                let title = category.title.clone();
+                if let Some(existing) = self
+                    .categories
+                    .iter_mut()
+                    .find(|category| category.id == id)
+                {
+                    existing.title = title.clone();
+                }
+                if matches!(
+                    &self.mode,
+                    Mode::RenameCategory { category_id, .. } if *category_id == id
+                ) {
+                    self.mode = Mode::Normal;
+                }
+                self.sync_sidebar_cursor();
+                self.set_status(
+                    StatusKind::Success,
+                    format!("Renamed category to “{title}”"),
+                );
             }
             ApiEvent::ImageLoaded { url, result } => {
                 if self.images.contains_key(&url) {
@@ -4138,5 +4222,75 @@ mod tests {
         app.selection = Selection::All;
 
         assert_eq!(app.selection_label(), "Everything");
+    }
+
+    #[test]
+    fn uppercase_e_renames_the_selected_category() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.selection = Selection::Category(CategoryID(1));
+        app.focus = Focus::Feeds;
+        // The category selection wins over the loaded entry.
+        app.entries = vec![render_entry(42, "unread")];
+        app.entry_cursor = 0;
+
+        press(&mut app, KeyCode::Char('E'));
+
+        match &app.mode {
+            Mode::RenameCategory { category_id, input } => {
+                assert_eq!(*category_id, CategoryID(1));
+                assert_eq!(input.as_str(), "News");
+            }
+            other => panic!("expected the rename dialog, got {other:?}"),
+        }
+
+        press_with(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        for ch in "Fresh".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+
+        assert!(matches!(app.mode, Mode::RenameCategory { .. }));
+        let command = rx.try_recv().expect("update-category command");
+        assert!(matches!(
+            command,
+            ApiCommand::UpdateCategory { id, title }
+                if id == CategoryID(1) && title == "Fresh"
+        ));
+
+        app.handle_api(ApiEvent::CategoryUpdated(Box::new(render_category(
+            1, "Fresh",
+        ))));
+
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.categories[0].title, "Fresh");
+        assert_eq!(app.selection, Selection::Category(CategoryID(1)));
+    }
+
+    #[test]
+    fn category_rename_rejects_an_empty_name() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.selection = Selection::Category(CategoryID(1));
+        press(&mut app, KeyCode::Char('E'));
+
+        press_with(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        press(&mut app, KeyCode::Enter);
+
+        assert!(matches!(app.mode, Mode::RenameCategory { .. }));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn escape_closes_the_category_rename_dialog() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.selection = Selection::Category(CategoryID(1));
+        press(&mut app, KeyCode::Char('E'));
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(rx.try_recv().is_err());
     }
 }

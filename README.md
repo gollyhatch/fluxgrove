@@ -37,7 +37,8 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
 - Edit the feed of the selected entry with `E`, covering every option the Miniflux API exposes:
   title, category, feed and site URLs, scraper / rewrite / block / keep rules,
   crawler, HTTP authentication, user agent, disabled, HTTP cache and proxy flags.
-  Press `d` in the dialog to unsubscribe, after a confirmation.
+  Press `d` in the dialog to unsubscribe, after a confirmation. With a category
+  selected in the Feeds pane, `E` renames it.
 - Jump from an entry to its feed with `p`, as if the feed were selected in the
   Feeds pane.
 - Server-side search, unread and starred views, per-category and per-feed views.
@@ -131,7 +132,7 @@ make it stick.
 | `1` / `2` / `3` | Focus feeds / entries / reader |
 | `g` / `G` | Jump to top / bottom |
 | `n` | Subscribe by website URL (feeds are detected automatically) |
-| `E` | Edit the feed of the selected entry, or the selected feed (all Miniflux options; `d` unsubscribes) |
+| `E` | Edit the selected feed or the entry’s feed (all Miniflux options; `d` unsubscribes), or rename the selected category |
 | `p` | Jump to the feed of the selected entry and show its entries |
 | `f` in Feeds | Hide / show feeds without unread items |
 | `f` in Entries | Hide / show read articles |

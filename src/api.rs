@@ -107,6 +107,10 @@ pub enum ApiCommand {
     DeleteFeed {
         id: FeedID,
     },
+    UpdateCategory {
+        id: CategoryID,
+        title: String,
+    },
     MarkAllRead {
         scope: MarkAllScope,
     },
@@ -150,6 +154,7 @@ pub enum ApiEvent {
     FeedDeleted {
         feed_id: FeedID,
     },
+    CategoryUpdated(Box<Category>),
     MarkedAllRead,
     ImageLoaded {
         url: String,
@@ -442,6 +447,21 @@ impl ApiClient {
                             error,
                         );
                     }
+                }
+            }
+            ApiCommand::UpdateCategory { id, title } => {
+                match self.api.update_category(id, &title, &self.http).await {
+                    Ok(category) => send(
+                        events,
+                        ApiEvent::CategoryUpdated(Box::new(decode_category(
+                            category,
+                        ))),
+                    ),
+                    Err(error) => send_error(
+                        events,
+                        "Could not rename the category",
+                        error,
+                    ),
                 }
             }
             ApiCommand::FetchContent { id } => {
@@ -943,6 +963,50 @@ mod tests {
             .expect("server finished")
             .expect("server task");
         assert_eq!(request_line, "DELETE /v1/feeds/42 HTTP/1.1");
+    }
+
+    #[tokio::test]
+    async fn renaming_a_category_reports_the_update() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let server = tokio::spawn(serve_feed_update(
+            listener,
+            serde_json::json!({"id": 3, "user_id": 1, "title": "Renamed"}),
+        ));
+
+        let client =
+            ApiClient::new(&test_config(&format!("http://{address}/")))
+                .expect("api client");
+        let (events, mut received) = mpsc::unbounded_channel();
+        client
+            .run(
+                ApiCommand::UpdateCategory {
+                    id: CategoryID(3),
+                    title: "Renamed".to_string(),
+                },
+                &events,
+            )
+            .await;
+
+        match received.recv().await.expect("an event") {
+            ApiEvent::CategoryUpdated(category) => {
+                assert_eq!(category.id, CategoryID(3));
+                assert_eq!(category.title, "Renamed");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let (request_line, _token, body) =
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("server finished")
+                .expect("server task");
+        assert_eq!(request_line, "PUT /v1/categories/3 HTTP/1.1");
+        let payload: serde_json::Value =
+            serde_json::from_str(&body).expect("JSON request body");
+        assert_eq!(payload["title"], "Renamed");
     }
 
     #[tokio::test]

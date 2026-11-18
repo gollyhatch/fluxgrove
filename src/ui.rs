@@ -152,6 +152,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_category_picker(frame, app, rows[0], &pal);
         draw_feed_delete_confirm(frame, app, rows[0], &pal);
     }
+    if matches!(app.mode, Mode::RenameCategory { .. }) {
+        draw_category_rename(frame, app, rows[0], &pal);
+    }
 }
 
 fn draw_body(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
@@ -939,8 +942,8 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
         Mode::ThemePicker { .. } => {
             &[("j/k", "preview"), ("Enter", "apply"), ("Esc", "cancel")]
         }
-        // The feed editor shows its hints inside the dialog.
-        Mode::EditFeed { .. } => &[],
+        // These dialogs show their hints inside themselves.
+        Mode::EditFeed { .. } | Mode::RenameCategory { .. } => &[],
         Mode::Normal => match app.focus {
             Focus::Feeds => &[
                 ("j/k", "select"),
@@ -1487,6 +1490,62 @@ fn draw_feed_editor(
     }
 }
 
+fn draw_category_rename(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    pal: &Palette,
+) {
+    let Mode::RenameCategory { input, .. } = &app.mode else {
+        return;
+    };
+
+    let width = ((u32::from(area.width) * 60 / 100) as u16)
+        .max(32)
+        .min(area.width.saturating_sub(2));
+    let height = 5_u16.min(area.height.saturating_sub(2)).max(3);
+    let area = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(pal.border(true))
+        .style(pal.panel())
+        .title_top(Line::from(Span::styled(" Rename category ", pal.heading())))
+        .title_bottom(
+            Line::from(Span::styled(" Enter save · Esc cancel ", pal.muted()))
+                .alignment(Alignment::Center),
+        );
+
+    let inner = block.inner(area);
+    let available = inner.width.saturating_sub(1) as usize;
+    let (start, caret) =
+        input_window(input.as_str(), input.cursor(), available);
+    let shown = &input.as_str()[start..];
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(shown.to_string(), pal.text()),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).style(pal.panel()).block(block),
+        area,
+    );
+
+    if inner.width > 0 && inner.height > 1 {
+        let offset_x = (1 + caret).min(inner.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((inner.x + offset_x as u16, inner.y + 1));
+    }
+}
+
 fn draw_category_picker(
     frame: &mut Frame,
     app: &App,
@@ -1867,6 +1926,10 @@ mod tests {
                 scope: SearchScope::Feeds,
                 original: String::new(),
                 original_selection: Selection::Unread,
+            },
+            Mode::RenameCategory {
+                category_id: CategoryID(1),
+                input: TextInput::new("News"),
             },
         ];
         for mode in modes {
@@ -2321,5 +2384,20 @@ mod tests {
 
         assert!(unread.is_some(), "the Unread icon was not drawn");
         assert_eq!(everything, unread);
+    }
+
+    #[test]
+    fn category_rename_dialog_renders() {
+        let mut app = test_app();
+        app.mode = Mode::RenameCategory {
+            category_id: CategoryID(1),
+            input: TextInput::new("News"),
+        };
+
+        let text = render_text(&mut app, 80, 24);
+
+        assert!(text.contains("Rename category"), "{text:?}");
+        assert!(text.contains("News"), "{text:?}");
+        assert!(text.contains("Enter save"), "{text:?}");
     }
 }
