@@ -159,6 +159,21 @@ make it stick.
 | `Ctrl-o` | Open the original article in the XDG-defined browser |
 | `r` | Ask Miniflux to refresh feeds |
 
+### Text input
+
+The feed editor, the search prompt and the subscribe prompt share these keys:
+
+| Key | Action |
+| --- | --- |
+| `←` / `→` | Move the caret |
+| `Ctrl/Alt-←` / `Ctrl/Alt-→` | Move by word |
+| `Home` / `Ctrl-A` | Start of the line |
+| `End` / `Ctrl-E` | End of the line |
+| `Backspace` / `Delete` | Delete before / under the caret |
+| `Ctrl-W` | Delete the previous word |
+| `Ctrl-K` | Delete to the end of the line |
+| `Ctrl-U` | Clear the line |
+
 ### Search and appearance
 
 | Key | Action |

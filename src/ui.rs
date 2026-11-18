@@ -15,7 +15,7 @@ use crate::{
     api,
     app::{
         App, FeedField, FeedForm, Focus, LoadedImage, Mode, SearchScope,
-        SidebarRow, StatusKind,
+        SidebarRow, StatusKind, TextInput,
     },
     util,
 };
@@ -872,42 +872,42 @@ fn draw_status(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     );
 }
 
-/// The tail of `text` that fits `width` columns, for appending input.
-fn fit_tail(text: &str, width: usize) -> String {
-    if util::display_width(text) <= width {
-        return text.to_string();
-    }
-    let mut result = String::new();
+/// The slice of `text` to show so the caret stays visible, and its column.
+fn input_window(text: &str, cursor: usize, width: usize) -> (usize, usize) {
+    let width = width.max(1);
     let mut used = 0;
-    for ch in text.chars().rev() {
+    let mut start = cursor;
+    for (index, ch) in text[..cursor].char_indices().rev() {
         let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width > width {
+        if used + ch_width > width.saturating_sub(1) {
             break;
         }
-        result.insert(0, ch);
         used += ch_width;
+        start = index;
     }
-    result
+    (start, used)
 }
 
 fn draw_input_prompt(
     frame: &mut Frame,
     area: Rect,
     prefix: &str,
-    input: &str,
+    input: &TextInput,
     pal: &Palette,
 ) {
     let prefix_width = util::display_width(prefix);
     let available = (area.width as usize).saturating_sub(prefix_width + 1);
-    let shown = fit_tail(input, available);
+    let (start, caret) =
+        input_window(input.as_str(), input.cursor(), available);
+    let shown = &input.as_str()[start..];
 
     let x = area.x
-        + (prefix_width + util::display_width(&shown))
-            .min(area.width.saturating_sub(1) as usize) as u16;
+        + (prefix_width + caret).min(area.width.saturating_sub(1) as usize)
+            as u16;
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(prefix.to_string(), pal.key()),
-            Span::styled(shown, pal.text()),
+            Span::styled(shown.to_string(), pal.text()),
         ]))
         .style(pal.base()),
         area,
@@ -1176,6 +1176,11 @@ fn help_rows() -> Vec<HelpRow> {
         ),
         Key("r", "ask Miniflux to refresh feeds"),
         Key("i", "show or hide embedded images"),
+        Section("Text input"),
+        Key("← / →", "move the caret (Ctrl/Alt by word)"),
+        Key("Home / End", "start / end (also Ctrl-A / Ctrl-E)"),
+        Key("Delete", "delete under the caret"),
+        Key("Ctrl-W / Ctrl-K", "delete word / to the end"),
         Section("Searching"),
         Key("/", "search entries, or filter feeds as you type"),
         Key("Enter", "apply the search"),
@@ -1403,7 +1408,7 @@ fn draw_feed_editor(
     // The dialog carries its own key hints; overlays show theirs.
     if !overlay_open {
         let hints = if editing {
-            " Enter done · Esc done · Ctrl-u clear "
+            " Enter done · ←/→ move · Ctrl-W delete · Ctrl-u clear "
         } else {
             " Enter edit · Ctrl-s save · d unsubscribe · Esc cancel "
         };
@@ -1423,12 +1428,19 @@ fn draw_feed_editor(
         .enumerate()
         .map(|(index, field)| {
             let selected = index == cursor;
+            let is_editing = selected && editing;
             let (value, muted) =
-                feed_field_value(app, form, *field, selected && editing);
-            let shown = if selected && editing {
-                fit_tail(&value, value_width)
-            } else {
-                util::truncate(&value, value_width)
+                feed_field_value(app, form, *field, is_editing);
+            let shown = match (is_editing, form.input(*field)) {
+                (true, Some(input)) => {
+                    let (start, _) = input_window(
+                        input.as_str(),
+                        input.cursor(),
+                        value_width,
+                    );
+                    input.as_str()[start..].to_string()
+                }
+                _ => util::truncate(&value, value_width),
             };
             let value_style = if muted {
                 pal.dim()
@@ -1461,19 +1473,17 @@ fn draw_feed_editor(
         area,
     );
 
-    if inner.width > 0 && inner.height > 0 && !overlay_open {
+    if inner.width > 0 && inner.height > 0 && !overlay_open && editing {
         let field = FeedField::ALL[cursor];
-        let (value, _) = feed_field_value(app, form, field, editing);
-        let shown = if editing {
-            fit_tail(&value, value_width)
-        } else {
-            util::truncate(&value, value_width)
-        };
-        let offset_x = (label_width + util::display_width(&shown))
-            .min(inner_width.saturating_sub(1));
-        let x = inner.x + offset_x as u16;
-        let y = inner.y + (cursor - offset) as u16;
-        frame.set_cursor_position((x, y));
+        if let Some(input) = form.input(field) {
+            let (_, caret) =
+                input_window(input.as_str(), input.cursor(), value_width);
+            let offset_x =
+                (label_width + caret).min(inner_width.saturating_sub(1));
+            let x = inner.x + offset_x as u16;
+            let y = inner.y + (cursor - offset) as u16;
+            frame.set_cursor_position((x, y));
+        }
     }
 }
 
@@ -1576,7 +1586,7 @@ fn draw_feed_delete_confirm(
         Line::from(""),
         Line::from(Span::styled(
             util::truncate(
-                &format!("Delete “{}” and its entries?", form.title),
+                &format!("Delete “{}” and its entries?", form.title.as_str()),
                 area.width.saturating_sub(4) as usize,
             ),
             pal.text(),
@@ -1853,7 +1863,7 @@ mod tests {
                 confirm_delete: true,
             },
             Mode::Search {
-                input: "rust".to_string(),
+                input: TextInput::new("rust"),
                 scope: SearchScope::Feeds,
                 original: String::new(),
                 original_selection: Selection::Unread,
@@ -1930,17 +1940,19 @@ mod tests {
 
     fn editor_form() -> FeedForm {
         FeedForm {
-            title: "A feed with a rather long title for the editor".to_string(),
+            title: TextInput::new(
+                "A feed with a rather long title for the editor",
+            ),
             category_id: CategoryID(3),
-            feed_url: "https://example.com/feed.xml".to_string(),
-            site_url: "https://example.com".to_string(),
-            user_agent: String::new(),
-            username: "user".to_string(),
-            password: "secret".to_string(),
-            scraper_rules: String::new(),
-            rewrite_rules: String::new(),
-            blocklist_rules: String::new(),
-            keeplist_rules: String::new(),
+            feed_url: TextInput::new("https://example.com/feed.xml"),
+            site_url: TextInput::new("https://example.com"),
+            user_agent: TextInput::new(String::new()),
+            username: TextInput::new("user"),
+            password: TextInput::new("secret"),
+            scraper_rules: TextInput::new(String::new()),
+            rewrite_rules: TextInput::new(String::new()),
+            blocklist_rules: TextInput::new(String::new()),
+            keeplist_rules: TextInput::new(String::new()),
             crawler: true,
             disabled: false,
             ignore_http_cache: true,
@@ -1999,7 +2011,7 @@ mod tests {
     fn unsubscribe_confirm_renders_the_prompt() {
         let mut app = test_app();
         let mut form = editor_form();
-        form.title = "Example feed".to_string();
+        form.title = TextInput::new("Example feed");
         app.mode = Mode::EditFeed {
             feed_id: FeedID(7),
             form: Box::new(form),
@@ -2057,7 +2069,7 @@ mod tests {
         let mut app = test_app();
         app.focus = Focus::Feeds;
         app.mode = Mode::Search {
-            input: "rust".to_string(),
+            input: TextInput::new("rust"),
             scope: SearchScope::Feeds,
             original: String::new(),
             original_selection: Selection::Unread,
@@ -2232,5 +2244,42 @@ mod tests {
         ));
 
         assert_eq!(app.article_scroll as usize, first);
+    }
+
+    #[test]
+    fn input_windows_keep_the_caret_visible() {
+        assert_eq!(input_window("short", 5, 10), (0, 5));
+
+        let text = "0123456789";
+        let (start, caret) = input_window(text, text.len(), 5);
+        assert_eq!((start, caret), (6, 4));
+        assert_eq!(&text[start..], "6789");
+
+        let (start, caret) = input_window(text, 5, 4);
+        assert_eq!((start, caret), (2, 3));
+    }
+
+    #[test]
+    fn long_fields_scroll_to_keep_the_caret_visible() {
+        let mut app = test_app();
+        let mut form = editor_form();
+        form.title.move_end();
+        app.mode = Mode::EditFeed {
+            feed_id: FeedID(7),
+            form: Box::new(form),
+            cursor: 0,
+            editing: true,
+            category_picker: None,
+            confirm_delete: false,
+        };
+
+        let text = render_text(&mut app, 80, 24);
+        let title_line = text
+            .lines()
+            .find(|line| line.contains("Title"))
+            .expect("title row");
+
+        assert!(!title_line.contains("A feed with"), "{title_line:?}");
+        assert!(title_line.contains("for the editor"), "{title_line:?}");
     }
 }

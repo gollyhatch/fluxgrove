@@ -145,20 +145,179 @@ impl FeedField {
     }
 }
 
+/// Editable text with a caret that can sit anywhere in the string.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextInput {
+    text: String,
+    cursor: usize,
+}
+
+impl TextInput {
+    pub fn new(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            cursor: text.len(),
+            text,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn prev_boundary(&self, index: usize) -> usize {
+        self.text[..index]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(index, _)| index)
+    }
+
+    fn next_boundary(&self, index: usize) -> usize {
+        self.text[index..]
+            .chars()
+            .next()
+            .map_or(self.text.len(), |ch| index + ch.len_utf8())
+    }
+
+    pub fn move_left(&mut self) {
+        self.cursor = self.prev_boundary(self.cursor);
+    }
+
+    pub fn move_right(&mut self) {
+        self.cursor = self.next_boundary(self.cursor);
+    }
+
+    pub fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn move_end(&mut self) {
+        self.cursor = self.text.len();
+    }
+
+    pub fn move_word_left(&mut self) {
+        let before = self.text[..self.cursor].trim_end();
+        self.cursor = before
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| ch.is_whitespace())
+            .map_or(0, |(index, ch)| index + ch.len_utf8());
+    }
+
+    pub fn move_word_right(&mut self) {
+        let after = &self.text[self.cursor..];
+        self.cursor = after
+            .char_indices()
+            .skip_while(|(_, ch)| ch.is_whitespace())
+            .find(|(_, ch)| ch.is_whitespace())
+            .map_or(self.text.len(), |(index, _)| self.cursor + index);
+    }
+
+    pub fn insert(&mut self, ch: char) {
+        self.text.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let start = self.prev_boundary(self.cursor);
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    pub fn delete(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        let end = self.next_boundary(self.cursor);
+        self.text.drain(self.cursor..end);
+    }
+
+    pub fn delete_word_before(&mut self) {
+        let end = self.cursor;
+        self.move_word_left();
+        self.text.drain(self.cursor..end);
+    }
+
+    pub fn delete_word_after(&mut self) {
+        let start = self.cursor;
+        self.move_word_right();
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    pub fn kill_to_end(&mut self) {
+        self.text.truncate(self.cursor);
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+}
+
+/// Apply the standard editing keys to a text input.
+///
+/// Returns false for keys the input does not use, so callers can handle them
+/// (Enter and Escape are handled before this is called).
+fn apply_text_key(
+    input: &mut TextInput,
+    key: crossterm::event::KeyEvent,
+) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let super_key = key.modifiers.contains(KeyModifiers::SUPER);
+
+    match key.code {
+        KeyCode::Left if control || alt => input.move_word_left(),
+        KeyCode::Right if control || alt => input.move_word_right(),
+        KeyCode::Left => input.move_left(),
+        KeyCode::Right => input.move_right(),
+        KeyCode::Home => input.move_home(),
+        KeyCode::End => input.move_end(),
+        KeyCode::Backspace if control || alt => input.delete_word_before(),
+        KeyCode::Backspace => input.backspace(),
+        KeyCode::Delete if control || alt => input.delete_word_after(),
+        KeyCode::Delete => input.delete(),
+        KeyCode::Char('a') if control => input.move_home(),
+        KeyCode::Char('e') if control => input.move_end(),
+        KeyCode::Char('b') if control => input.move_left(),
+        KeyCode::Char('f') if control => input.move_right(),
+        KeyCode::Char('h') if control => input.backspace(),
+        KeyCode::Char('u') if control => input.clear(),
+        KeyCode::Char('w') if control => input.delete_word_before(),
+        KeyCode::Char('k') if control => input.kill_to_end(),
+        KeyCode::Char(ch) if !control && !alt && !super_key => input.insert(ch),
+        _ => return false,
+    }
+    true
+}
+
 /// The editable copy of a feed shown by the editor.
 #[derive(Clone, Debug)]
 pub struct FeedForm {
-    pub title: String,
+    pub title: TextInput,
     pub category_id: CategoryID,
-    pub feed_url: String,
-    pub site_url: String,
-    pub user_agent: String,
-    pub username: String,
-    pub password: String,
-    pub scraper_rules: String,
-    pub rewrite_rules: String,
-    pub blocklist_rules: String,
-    pub keeplist_rules: String,
+    pub feed_url: TextInput,
+    pub site_url: TextInput,
+    pub user_agent: TextInput,
+    pub username: TextInput,
+    pub password: TextInput,
+    pub scraper_rules: TextInput,
+    pub rewrite_rules: TextInput,
+    pub blocklist_rules: TextInput,
+    pub keeplist_rules: TextInput,
     pub crawler: bool,
     pub disabled: bool,
     pub ignore_http_cache: bool,
@@ -168,17 +327,17 @@ pub struct FeedForm {
 impl FeedForm {
     fn from_feed(feed: &Feed) -> Self {
         Self {
-            title: feed.title.clone(),
+            title: TextInput::new(feed.title.clone()),
             category_id: feed.category.id,
-            feed_url: feed.feed_url.clone(),
-            site_url: feed.site_url.clone(),
-            user_agent: feed.user_agent.clone(),
-            username: feed.username.clone(),
-            password: feed.password.clone(),
-            scraper_rules: feed.scraper_rules.clone(),
-            rewrite_rules: feed.rewrite_rules.clone(),
-            blocklist_rules: feed.blocklist_rules.clone(),
-            keeplist_rules: feed.keeplist_rules.clone(),
+            feed_url: TextInput::new(feed.feed_url.clone()),
+            site_url: TextInput::new(feed.site_url.clone()),
+            user_agent: TextInput::new(feed.user_agent.clone()),
+            username: TextInput::new(feed.username.clone()),
+            password: TextInput::new(feed.password.clone()),
+            scraper_rules: TextInput::new(feed.scraper_rules.clone()),
+            rewrite_rules: TextInput::new(feed.rewrite_rules.clone()),
+            blocklist_rules: TextInput::new(feed.blocklist_rules.clone()),
+            keeplist_rules: TextInput::new(feed.keeplist_rules.clone()),
             crawler: feed.crawler,
             disabled: feed.disabled,
             ignore_http_cache: feed.ignore_http_cache,
@@ -187,6 +346,26 @@ impl FeedForm {
     }
 
     pub fn text(&self, field: FeedField) -> Option<&str> {
+        match field {
+            FeedField::Title => Some(self.title.as_str()),
+            FeedField::FeedUrl => Some(self.feed_url.as_str()),
+            FeedField::SiteUrl => Some(self.site_url.as_str()),
+            FeedField::UserAgent => Some(self.user_agent.as_str()),
+            FeedField::Username => Some(self.username.as_str()),
+            FeedField::Password => Some(self.password.as_str()),
+            FeedField::ScraperRules => Some(self.scraper_rules.as_str()),
+            FeedField::RewriteRules => Some(self.rewrite_rules.as_str()),
+            FeedField::BlocklistRules => Some(self.blocklist_rules.as_str()),
+            FeedField::KeeplistRules => Some(self.keeplist_rules.as_str()),
+            FeedField::Category
+            | FeedField::Crawler
+            | FeedField::Disabled
+            | FeedField::IgnoreHttpCache
+            | FeedField::FetchViaProxy => None,
+        }
+    }
+
+    pub fn input(&self, field: FeedField) -> Option<&TextInput> {
         match field {
             FeedField::Title => Some(&self.title),
             FeedField::FeedUrl => Some(&self.feed_url),
@@ -206,7 +385,7 @@ impl FeedForm {
         }
     }
 
-    fn text_mut(&mut self, field: FeedField) -> Option<&mut String> {
+    fn text_mut(&mut self, field: FeedField) -> Option<&mut TextInput> {
         match field {
             FeedField::Title => Some(&mut self.title),
             FeedField::FeedUrl => Some(&mut self.feed_url),
@@ -242,17 +421,17 @@ impl FeedForm {
 
     fn update(&self) -> api::FeedUpdate {
         api::FeedUpdate {
-            title: self.title.clone(),
+            title: self.title.as_str().to_string(),
             category_id: self.category_id,
-            feed_url: self.feed_url.clone(),
-            site_url: self.site_url.clone(),
-            user_agent: self.user_agent.clone(),
-            username: self.username.clone(),
-            password: self.password.clone(),
-            scraper_rules: self.scraper_rules.clone(),
-            rewrite_rules: self.rewrite_rules.clone(),
-            blocklist_rules: self.blocklist_rules.clone(),
-            keeplist_rules: self.keeplist_rules.clone(),
+            feed_url: self.feed_url.as_str().to_string(),
+            site_url: self.site_url.as_str().to_string(),
+            user_agent: self.user_agent.as_str().to_string(),
+            username: self.username.as_str().to_string(),
+            password: self.password.as_str().to_string(),
+            scraper_rules: self.scraper_rules.as_str().to_string(),
+            rewrite_rules: self.rewrite_rules.as_str().to_string(),
+            blocklist_rules: self.blocklist_rules.as_str().to_string(),
+            keeplist_rules: self.keeplist_rules.as_str().to_string(),
             crawler: self.crawler,
             disabled: self.disabled,
             ignore_http_cache: self.ignore_http_cache,
@@ -288,13 +467,13 @@ pub enum Mode {
     #[default]
     Normal,
     Search {
-        input: String,
+        input: TextInput,
         scope: SearchScope,
         original: String,
         original_selection: Selection,
     },
     Subscribe {
-        input: String,
+        input: TextInput,
     },
     FeedPicker {
         subscriptions: Vec<Subscription>,
@@ -803,12 +982,16 @@ impl App {
             KeyCode::Char('/') => {
                 let (input, scope, original) = if self.focus == Focus::Feeds {
                     (
-                        self.feed_filter.clone(),
+                        TextInput::new(self.feed_filter.clone()),
                         SearchScope::Feeds,
                         self.feed_filter.clone(),
                     )
                 } else {
-                    (self.search.clone(), SearchScope::Entries, String::new())
+                    (
+                        TextInput::new(self.search.clone()),
+                        SearchScope::Entries,
+                        String::new(),
+                    )
                 };
                 self.mode = Mode::Search {
                     input,
@@ -820,7 +1003,7 @@ impl App {
             KeyCode::Char('c') => self.clear_search(),
             KeyCode::Char('n') => {
                 self.mode = Mode::Subscribe {
-                    input: String::new(),
+                    input: TextInput::default(),
                 };
             }
             KeyCode::Char('t') => self.open_theme_picker(),
@@ -835,12 +1018,12 @@ impl App {
     fn handle_search(
         &mut self,
         key: crossterm::event::KeyEvent,
-        mut input: String,
+        mut input: TextInput,
         scope: SearchScope,
         original: String,
         original_selection: Selection,
     ) {
-        use crossterm::event::{KeyCode, KeyModifiers};
+        use crossterm::event::KeyCode;
 
         match key.code {
             KeyCode::Esc => {
@@ -859,7 +1042,7 @@ impl App {
             }
             KeyCode::Enter => {
                 self.mode = Mode::Normal;
-                let value = input.trim().to_string();
+                let value = input.as_str().trim().to_string();
                 match scope {
                     SearchScope::Entries => {
                         self.search = value;
@@ -888,40 +1071,13 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Backspace => {
-                input.pop();
+            _ => {
+                apply_text_key(&mut input, key);
             }
-            KeyCode::Char('u')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                input.clear();
-            }
-            KeyCode::Char('w')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                while input.ends_with(' ') {
-                    input.pop();
-                }
-                while let Some(ch) = input.pop() {
-                    if ch == ' ' {
-                        break;
-                    }
-                }
-            }
-            KeyCode::Char(ch)
-                if !key.modifiers.intersects(
-                    KeyModifiers::CONTROL
-                        | KeyModifiers::ALT
-                        | KeyModifiers::SUPER,
-                ) =>
-            {
-                input.push(ch);
-            }
-            _ => {}
         }
 
         if scope == SearchScope::Feeds {
-            self.apply_live_feed_filter(&input);
+            self.apply_live_feed_filter(input.as_str());
         }
         self.mode = Mode::Search {
             input,
@@ -963,55 +1119,25 @@ impl App {
     fn handle_subscribe(
         &mut self,
         key: crossterm::event::KeyEvent,
-        mut input: String,
+        mut input: TextInput,
     ) {
-        use crossterm::event::{KeyCode, KeyModifiers};
+        use crossterm::event::KeyCode;
 
         match key.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
+                return;
             }
             KeyCode::Enter => {
                 self.mode = Mode::Normal;
-                self.discover_feeds(input);
-            }
-            KeyCode::Backspace => {
-                input.pop();
-                self.mode = Mode::Subscribe { input };
-            }
-            KeyCode::Char('u')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                input.clear();
-                self.mode = Mode::Subscribe { input };
-            }
-            KeyCode::Char('w')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                while input.ends_with(' ') {
-                    input.pop();
-                }
-                while let Some(ch) = input.pop() {
-                    if ch == ' ' {
-                        break;
-                    }
-                }
-                self.mode = Mode::Subscribe { input };
-            }
-            KeyCode::Char(ch)
-                if !key.modifiers.intersects(
-                    KeyModifiers::CONTROL
-                        | KeyModifiers::ALT
-                        | KeyModifiers::SUPER,
-                ) =>
-            {
-                input.push(ch);
-                self.mode = Mode::Subscribe { input };
+                self.discover_feeds(input.as_str().to_string());
+                return;
             }
             _ => {
-                self.mode = Mode::Subscribe { input };
+                apply_text_key(&mut input, key);
             }
         }
+        self.mode = Mode::Subscribe { input };
     }
 
     fn discover_feeds(&mut self, input: String) {
@@ -1464,44 +1590,11 @@ impl App {
         if editing {
             match key.code {
                 KeyCode::Enter | KeyCode::Esc => editing = false,
-                KeyCode::Backspace => {
-                    if let Some(text) = form.text_mut(field) {
-                        text.pop();
+                _ => {
+                    if let Some(input) = form.text_mut(field) {
+                        apply_text_key(input, key);
                     }
                 }
-                KeyCode::Char('u')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(text) = form.text_mut(field) {
-                        text.clear();
-                    }
-                }
-                KeyCode::Char('w')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(text) = form.text_mut(field) {
-                        while text.ends_with(' ') {
-                            text.pop();
-                        }
-                        while let Some(ch) = text.pop() {
-                            if ch == ' ' {
-                                break;
-                            }
-                        }
-                    }
-                }
-                KeyCode::Char(ch)
-                    if !key.modifiers.intersects(
-                        KeyModifiers::CONTROL
-                            | KeyModifiers::ALT
-                            | KeyModifiers::SUPER,
-                    ) =>
-                {
-                    if let Some(text) = form.text_mut(field) {
-                        text.push(ch);
-                    }
-                }
-                _ => {}
             }
             self.mode = Mode::EditFeed {
                 feed_id,
@@ -2600,7 +2693,7 @@ mod tests {
         app.categories = vec![render_category(2, "Engineering")];
         app.selection = Selection::Category(CategoryID(2));
         app.mode = Mode::Subscribe {
-            input: "https://example.com".to_string(),
+            input: TextInput::new("https://example.com"),
         };
 
         press(&mut app, KeyCode::Enter);
@@ -2695,7 +2788,7 @@ mod tests {
         let _ = rx.try_recv(); // initial Bootstrap
         app.categories = vec![render_category(1, "Category")];
         app.mode = Mode::Subscribe {
-            input: "not a url".to_string(),
+            input: TextInput::new("not a url"),
         };
 
         press(&mut app, KeyCode::Enter);
@@ -3138,9 +3231,12 @@ mod tests {
         match &app.mode {
             Mode::EditFeed { feed_id, form, .. } => {
                 assert_eq!(*feed_id, FeedID(7));
-                assert_eq!(form.title, "Example");
-                assert_eq!(form.feed_url, "https://example.com/feed.xml");
-                assert_eq!(form.site_url, "https://example.com");
+                assert_eq!(form.title.as_str(), "Example");
+                assert_eq!(
+                    form.feed_url.as_str(),
+                    "https://example.com/feed.xml"
+                );
+                assert_eq!(form.site_url.as_str(), "https://example.com");
                 assert_eq!(form.category_id, CategoryID(1));
             }
             other => panic!("expected the feed editor, got {other:?}"),
@@ -3160,7 +3256,7 @@ mod tests {
         match &app.mode {
             Mode::EditFeed { feed_id, form, .. } => {
                 assert_eq!(*feed_id, FeedID(7));
-                assert_eq!(form.title, "Example");
+                assert_eq!(form.title.as_str(), "Example");
             }
             other => panic!("expected the feed editor, got {other:?}"),
         }
@@ -3939,5 +4035,100 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
 
         assert_eq!(app.article_scroll, 0);
+    }
+
+    #[test]
+    fn text_input_moves_the_caret() {
+        let mut input = TextInput::new("hello world");
+
+        input.move_left();
+        input.insert('!');
+        assert_eq!(input.as_str(), "hello worl!d");
+
+        input.move_home();
+        input.insert('>');
+        assert_eq!(input.as_str(), ">hello worl!d");
+
+        input.move_end();
+        input.insert('<');
+        assert_eq!(input.as_str(), ">hello worl!d<");
+    }
+
+    #[test]
+    fn text_input_moves_and_deletes_by_word() {
+        let mut input = TextInput::new("one two three");
+        input.move_word_left();
+        assert_eq!(input.cursor(), 8);
+        input.move_word_left();
+        assert_eq!(input.cursor(), 4);
+        input.move_word_right();
+        assert_eq!(input.cursor(), 7);
+
+        input.delete_word_before();
+        assert_eq!(input.as_str(), "one  three");
+        assert_eq!(input.cursor(), 4);
+
+        input.delete_word_after();
+        assert_eq!(input.as_str(), "one ");
+    }
+
+    #[test]
+    fn text_input_deletes_around_the_caret() {
+        let mut input = TextInput::new("hello world");
+        input.move_home();
+        input.delete();
+        assert_eq!(input.as_str(), "ello world");
+
+        input.move_end();
+        input.backspace();
+        assert_eq!(input.as_str(), "ello worl");
+
+        input.kill_to_end();
+        assert_eq!(input.as_str(), "ello worl");
+
+        input.clear();
+        assert_eq!(input.as_str(), "");
+        assert_eq!(input.cursor(), 0);
+    }
+
+    #[test]
+    fn feed_editor_edits_at_the_caret() {
+        let (mut app, _rx) = test_app_with_feed();
+        press(&mut app, KeyCode::Char('E'));
+        press(&mut app, KeyCode::Enter);
+
+        press_with(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        for ch in "X ".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Char('!'));
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Char('?'));
+
+        let form = match &app.mode {
+            Mode::EditFeed { form, .. } => form,
+            other => panic!("expected the feed editor, got {other:?}"),
+        };
+        assert_eq!(form.title.as_str(), "X Example?!");
+    }
+
+    #[test]
+    fn search_input_edits_at_the_caret() {
+        let (mut app, mut rx) = test_app_with_feed();
+        let _ = rx.try_recv(); // initial Bootstrap
+        app.bootstrapped = true;
+        app.focus = Focus::Entries;
+
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "rust".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press_with(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        press(&mut app, KeyCode::Char('c'));
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.search, "cust");
     }
 }
