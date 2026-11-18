@@ -607,6 +607,7 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     lines.push(Line::from(""));
 
     let mut images: Vec<ImagePlacement> = Vec::new();
+    let mut paragraph_starts: Vec<usize> = Vec::new();
     if app.article_parts.is_empty() {
         lines.push(Line::from(Span::styled(
             "No content available. Press o to open the original article.",
@@ -616,13 +617,20 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
         for part in &app.article_parts {
             match part {
                 util::ArticlePart::Text(text) => {
+                    let mut after_blank = true;
                     for line in util::wrap_text(text, inner_width) {
+                        let blank = line.trim().is_empty();
+                        if !blank && after_blank {
+                            paragraph_starts.push(lines.len());
+                        }
+                        after_blank = blank;
                         lines.push(Line::from(line));
                     }
                 }
                 util::ArticlePart::Image { url, alt } => {
                     let label = if alt.trim().is_empty() { url } else { alt };
                     let start = lines.len();
+                    paragraph_starts.push(start);
                     if !app.show_images {
                         lines.push(Line::from(Span::styled(
                             util::truncate(
@@ -678,6 +686,7 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
         }
     }
 
+    app.article_paragraph_stops = paragraph_starts;
     let total = lines.len();
     let max_scroll = total.saturating_sub(inner_height);
     app.article_max_scroll = max_scroll.min(u16::MAX as usize) as u16;
@@ -1035,6 +1044,7 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
             ],
             Focus::Article => &[
                 ("j/k", "scroll"),
+                ("Space", "paragraph"),
                 ("J/K", "next/prev"),
                 ("g/G", "top/end"),
                 ("Ctrl-d/u", "half page"),
@@ -1198,6 +1208,7 @@ fn help_rows() -> Vec<HelpRow> {
         Key("f (Entries)", "hide / show read articles"),
         Key("Ctrl-d / Ctrl-u", "half page down / up"),
         Key("PgUp / PgDn", "page up / down"),
+        Key("Space", "scroll to the next paragraph"),
         Key("Ctrl-f / Ctrl-b", "full page down / up"),
         Key("Enter", "open entry in the reader"),
         Key("Esc", "clear the search or feed filter, or go back"),
@@ -2232,5 +2243,40 @@ mod tests {
         let borders = text.lines().nth(1).expect("pane borders");
         assert!(borders.contains("Unread"), "{borders:?}");
         assert!(borders.contains("Reader"), "{borders:?}");
+    }
+
+    #[test]
+    fn space_moves_to_the_next_rendered_paragraph() {
+        let mut app = test_app();
+        let mut entry = starred_entry();
+        let paragraph = "Body text that keeps the article taller ".repeat(10);
+        entry.content =
+            format!("<p>{paragraph}</p><p>{paragraph}</p><p>{paragraph}</p>");
+        app.entries = vec![entry];
+        app.entry_cursor = 0;
+        app.focus = Focus::Article;
+        app.ensure_article();
+
+        let _ = render_text(&mut app, 80, 24);
+
+        let stops = app.article_paragraph_stops.clone();
+        assert!(stops.len() >= 3, "{stops:?}");
+        assert!(stops.windows(2).all(|pair| pair[0] < pair[1]));
+        let first = stops[0];
+        assert!(first > 0, "{stops:?}");
+        assert!(
+            (first as u16) <= app.article_max_scroll,
+            "first stop {first} beyond max {}",
+            app.article_max_scroll
+        );
+
+        app.handle_event(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(' '),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ));
+
+        assert_eq!(app.article_scroll as usize, first);
     }
 }

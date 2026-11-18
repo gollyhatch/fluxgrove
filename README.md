@@ -149,6 +149,7 @@ make it stick.
 | `i` | Show or hide embedded images in the reader (default off) |
 | `m` | Toggle read / unread (marking read advances to the next entry) |
 | `M` | Mark every entry in the current view as read |
+| `Space` | Scroll the reader to the start of the next paragraph |
 | `J` / `K` | Next / previous article while the reader is focused; marks it read |
 | `s` | Toggle star / bookmark |
 | `S` | Save the article to a configured Miniflux integration |

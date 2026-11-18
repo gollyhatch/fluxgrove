@@ -388,6 +388,8 @@ pub struct App {
     pub article_scroll: u16,
     pub article_max_scroll: u16,
     pub article_page: u16,
+    /// First line of every paragraph, in reader content order.
+    pub article_paragraph_stops: Vec<usize>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -451,6 +453,7 @@ impl App {
             article_scroll: 0,
             article_max_scroll: 0,
             article_page: 10,
+            article_paragraph_stops: Vec::new(),
             should_quit: false,
             dirty: true,
             startup_warning: None,
@@ -499,6 +502,7 @@ impl App {
             self.article_text.clear();
             self.article_parts.clear();
             self.images.clear();
+            self.article_paragraph_stops.clear();
             self.article_entry = None;
             self.article_scroll = 0;
         }
@@ -785,6 +789,9 @@ impl App {
             KeyCode::Char('E') => self.edit_selected_feed(),
             KeyCode::Char('p') => self.jump_to_entry_feed(),
             KeyCode::Char('i') => self.toggle_images(),
+            KeyCode::Char(' ') if self.focus == Focus::Article => {
+                self.scroll_to_next_paragraph();
+            }
             KeyCode::Char('s') => self.toggle_star(),
             KeyCode::Char('J') if self.focus == Focus::Article => {
                 self.open_relative_article(1);
@@ -1740,6 +1747,19 @@ impl App {
         }
     }
 
+    fn scroll_to_next_paragraph(&mut self) {
+        let current = self.article_scroll as usize;
+        let target = self
+            .article_paragraph_stops
+            .iter()
+            .copied()
+            .find(|&start| start > current)
+            .unwrap_or(self.article_max_scroll as usize);
+        self.article_scroll =
+            target.min(self.article_max_scroll as usize) as u16;
+        self.dirty = true;
+    }
+
     fn scroll_article(&mut self, delta: i32) {
         if delta < 0 {
             self.article_scroll = self.article_scroll.saturating_sub(
@@ -2414,6 +2434,7 @@ impl App {
                 self.article_text.clear();
                 self.article_parts.clear();
                 self.images.clear();
+                self.article_paragraph_stops.clear();
                 self.article_scroll = 0;
             }
         }
@@ -3906,5 +3927,37 @@ mod tests {
             ApiCommand::LoadImage { url }
                 if url == "https://example.com/pic.png"
         ));
+    }
+
+    #[test]
+    fn space_scrolls_to_the_next_paragraph() {
+        let (mut app, _rx) = test_app();
+        app.focus = Focus::Article;
+        app.article_max_scroll = 100;
+        app.article_paragraph_stops = vec![10, 30, 60];
+        app.article_scroll = 0;
+
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.article_scroll, 10);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.article_scroll, 30);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.article_scroll, 60);
+        // Past the last paragraph, settle at the bottom.
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.article_scroll, 100);
+    }
+
+    #[test]
+    fn space_does_nothing_outside_the_reader() {
+        let (mut app, _rx) = test_app();
+        app.focus = Focus::Entries;
+        app.article_max_scroll = 100;
+        app.article_paragraph_stops = vec![10];
+        app.article_scroll = 0;
+
+        press(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(app.article_scroll, 0);
     }
 }
