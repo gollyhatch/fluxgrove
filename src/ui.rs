@@ -357,8 +357,13 @@ fn draw_entries(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     } else {
         app.entry_counter_label()
     };
+    let entries_title = fitted_title(
+        &app.selection_label(),
+        Some(&entries_counter),
+        area.width,
+    );
     let block =
-        pane_block("Entries", Some(entries_counter), focused, pal, false);
+        pane_block(&entries_title, Some(entries_counter), focused, pal, false);
 
     let inner_height = area.height.saturating_sub(2) as usize;
 
@@ -685,8 +690,10 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     } else {
         (scroll as usize * 100 / app.article_max_scroll as usize).min(100)
     };
+    let percent_label = format!("{percent}%");
+    let reader_title = fitted_title(&title, Some(&percent_label), area.width);
     let block =
-        pane_block("Reader", Some(format!("{percent}%")), focused, pal, true);
+        pane_block(&reader_title, Some(percent_label), focused, pal, true);
 
     let paragraph = Paragraph::new(lines)
         .style(pal.panel())
@@ -808,6 +815,13 @@ fn blend_pixel(pixel: [u8; 4], background: Color) -> Color {
             / 255) as u8
     };
     Color::Rgb(mix(red, bg_red), mix(green, bg_green), mix(blue, bg_blue))
+}
+
+/// Fit a pane title next to its right-hand label.
+fn fitted_title(title: &str, right: Option<&str>, width: u16) -> String {
+    let reserved = right.map_or(0, |right| util::display_width(right) + 4);
+    let available = (width as usize).saturating_sub(reserved).max(1);
+    util::truncate(title, available)
 }
 
 fn pane_block(
@@ -2127,6 +2141,26 @@ mod tests {
         assert!(text.contains("▀"), "the image was not drawn: {text:?}");
     }
 
+    fn feed(
+        id: i64,
+        title: &str,
+        category_id: i64,
+    ) -> miniflux_api::models::Feed {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "user_id": 1,
+            "title": title,
+            "site_url": "https://example.com",
+            "feed_url": "https://example.com/feed.xml",
+            "category": {
+                "id": category_id,
+                "user_id": 1,
+                "title": "Category"
+            }
+        }))
+        .expect("valid test feed")
+    }
+
     #[test]
     fn the_star_sits_on_the_metadata_line() {
         let mut app = test_app();
@@ -2170,5 +2204,33 @@ mod tests {
         assert_eq!(image_geometry(&image(4, 4), 80), (80, 40));
         assert_eq!(image_geometry(&image(1000, 10), 46), (46, 1));
         assert_eq!(image_geometry(&image(1, 8192), 10), (10, MAX_IMAGE_ROWS));
+    }
+
+    #[test]
+    fn pane_titles_use_the_selection_and_entry_titles() {
+        let mut app = test_app();
+        app.categories = vec![category(1, "News")];
+        app.feeds = vec![feed(7, "My Feed", 1)];
+        app.selection = Selection::Feed(FeedID(7));
+        app.focus = Focus::Entries;
+        app.entries = vec![starred_entry()];
+        app.entry_cursor = 0;
+
+        // At 80 columns with the Entries pane focused only the entries and
+        // reader panes are drawn, so the sidebar cannot supply these titles.
+        let text = render_text(&mut app, 80, 24);
+        let borders = text.lines().nth(1).expect("pane borders");
+
+        assert!(borders.contains("My Feed"), "{borders:?}");
+        assert!(borders.contains("Starred entry"), "{borders:?}");
+        assert!(!borders.contains("Entries"), "{borders:?}");
+        assert!(!borders.contains("Reader"), "{borders:?}");
+
+        app.selection = Selection::Unread;
+        app.entries.clear();
+        let text = render_text(&mut app, 80, 24);
+        let borders = text.lines().nth(1).expect("pane borders");
+        assert!(borders.contains("Unread"), "{borders:?}");
+        assert!(borders.contains("Reader"), "{borders:?}");
     }
 }
