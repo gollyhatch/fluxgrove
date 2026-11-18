@@ -26,7 +26,8 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
 - Entry list shows the article title plus feed / age / reading time.
 - Long titles wrap to the available width instead of being clipped.
 - Embedded article images in the reading view, drawn with block graphics and
-  toggled with `i` (off by default; set `images = true` to start enabled).
+  scaled to the pane width, toggled with `i` (off by default; set
+  `images = true` to start enabled).
 - Save articles to a configured Miniflux integration with `S`.
 - Fetch and display the original article content with `F`.
 - Hide feeds with no unread items, or read articles, with `f` depending on the

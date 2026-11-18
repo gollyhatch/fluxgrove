@@ -608,7 +608,6 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
             pal.dim(),
         )));
     } else {
-        let max_image_rows = (inner_height / 2).max(1);
         for part in &app.article_parts {
             match part {
                 util::ArticlePart::Text(text) => {
@@ -631,11 +630,8 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
                     }
                     match app.images.get(url) {
                         Some(LoadedImage::Ready(image)) => {
-                            let (width, rows) = image_geometry(
-                                image,
-                                inner_width,
-                                max_image_rows,
-                            );
+                            let (width, rows) =
+                                image_geometry(image, inner_width);
                             lines.extend(
                                 std::iter::repeat_with(|| Line::from(""))
                                     .take(rows),
@@ -715,24 +711,22 @@ struct ImagePlacement {
     rows: usize,
 }
 
-/// Fit an image into the reader width and at most `max_rows` rows.
+/// Guard against pathological images filling the line list.
+const MAX_IMAGE_ROWS: usize = 4096;
+
+/// Scale an image to the full reader width, keeping its aspect ratio.
 fn image_geometry(
     image: &api::DecodedImage,
     max_width: usize,
-    max_rows: usize,
 ) -> (usize, usize) {
     let max_width = max_width.max(1);
-    let max_rows = max_rows.max(1);
     let src_w = image.width.max(1) as f64;
     let src_h = image.height.max(1) as f64;
-    let mut width = max_width as f64;
-    let mut rows = (width * src_h / src_w / 2.0).ceil();
-    if rows > max_rows as f64 {
-        rows = max_rows as f64;
-        width = rows * 2.0 * src_w / src_h;
-    }
-    let width = (width.round() as usize).clamp(1, max_width);
-    let rows = (rows.round() as usize).clamp(1, max_rows);
+    // Two source pixels per cell row: terminal cells are about twice as tall
+    // as they are wide.
+    let rows = (max_width as f64 * src_h / src_w / 2.0).ceil();
+    let width = max_width;
+    let rows = (rows.round() as usize).clamp(1, MAX_IMAGE_ROWS);
     (width, rows)
 }
 
@@ -2162,5 +2156,19 @@ mod tests {
             .find(|line| line.contains("Feed X"))
             .expect("meta line");
         assert!(!meta_line.contains('★'), "{meta_line:?}");
+    }
+
+    #[test]
+    fn images_fill_the_reading_width() {
+        let image = |width, height| api::DecodedImage {
+            width,
+            height,
+            rgba: vec![255; 0],
+        };
+
+        assert_eq!(image_geometry(&image(300, 600), 80), (80, 80));
+        assert_eq!(image_geometry(&image(4, 4), 80), (80, 40));
+        assert_eq!(image_geometry(&image(1000, 10), 46), (46, 1));
+        assert_eq!(image_geometry(&image(1, 8192), 10), (10, MAX_IMAGE_ROWS));
     }
 }

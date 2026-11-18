@@ -20,6 +20,10 @@ use crate::{
 
 /// Upper bound for a single embedded image.
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+/// Upper bound for an image dimension, to reject decompression bombs.
+const MAX_IMAGE_DIMENSION: u32 = 8192;
+/// Upper bound for decoder allocations.
+const MAX_IMAGE_ALLOC: u64 = 64 * 1024 * 1024;
 
 /// A decoded image ready to be drawn in the reader.
 #[derive(Debug, Clone)]
@@ -218,7 +222,15 @@ impl ApiClient {
             anyhow::bail!("image is larger than {MAX_IMAGE_BYTES} bytes");
         }
         let rgba = tokio::task::spawn_blocking(move || {
-            image::load_from_memory(&bytes).map(|image| image.to_rgba8())
+            let mut reader =
+                image::ImageReader::new(std::io::Cursor::new(bytes))
+                    .with_guessed_format()?;
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+            limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+            limits.max_alloc = Some(MAX_IMAGE_ALLOC);
+            reader.limits(limits);
+            reader.decode().map(|image| image.to_rgba8())
         })
         .await
         .context("the image decoding task failed")?
