@@ -445,7 +445,6 @@ fn entry_item(
     } else {
         pal.dim()
     };
-    let star = if entry.starred { "★" } else { " " };
     let star_style = Style::default().fg(pal.color(tokens::WARNING));
     let title_style = if unread { pal.strong() } else { pal.muted() };
 
@@ -454,7 +453,7 @@ fn entry_item(
     } else {
         entry.title.clone()
     };
-    let title_width = width.saturating_sub(4).max(1);
+    let title_width = width.saturating_sub(2).max(1);
     let max_lines = max_lines.max(1);
     // Reserve the metadata line unless the viewport only has room for a title.
     let show_meta = max_lines > 1;
@@ -470,13 +469,12 @@ fn entry_item(
     let first_title_line = title_lines.next().unwrap_or_default();
     let mut lines = vec![Line::from(vec![
         Span::styled(format!("{marker} "), marker_style),
-        Span::styled(format!("{star} "), star_style),
         Span::styled(first_title_line, title_style),
     ])];
 
     for title_line in title_lines {
         lines.push(Line::from(vec![
-            Span::raw("    "),
+            Span::raw("  "),
             Span::styled(title_line, title_style),
         ]));
     }
@@ -490,13 +488,17 @@ fn entry_item(
         if entry.reading_time > 0 {
             meta.push_str(&format!(" · {} min", entry.reading_time));
         }
-        lines.push(Line::from(vec![
+        let star = if entry.starred { " · ★" } else { "" };
+        let meta_width =
+            width.saturating_sub(2 + util::display_width(star)).max(1);
+        let mut spans = vec![
             Span::raw("  "),
-            Span::styled(
-                util::truncate(&meta, width.saturating_sub(4)),
-                pal.dim(),
-            ),
-        ]));
+            Span::styled(util::truncate(&meta, meta_width), pal.dim()),
+        ];
+        if entry.starred {
+            spans.push(Span::styled(star, star_style));
+        }
+        lines.push(Line::from(spans));
     }
 
     let height = lines.len();
@@ -1786,6 +1788,36 @@ mod tests {
         .expect("valid test entry")
     }
 
+    fn starred_entry() -> miniflux_api::models::Entry {
+        serde_json::from_value(serde_json::json!({
+            "id": 2,
+            "user_id": 1,
+            "feed_id": 7,
+            "status": "unread",
+            "hash": "hash-2",
+            "title": "Starred entry",
+            "url": "https://example.com/2",
+            "author": "Author",
+            "content": "<p>Body</p>",
+            "published_at": "2026-01-01T00:00:00Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "share_code": "",
+            "starred": true,
+            "reading_time": 3,
+            "enclosures": [],
+            "tags": [],
+            "feed": {
+                "id": 7,
+                "user_id": 1,
+                "title": "Feed X",
+                "site_url": "https://example.com",
+                "feed_url": "https://example.com/feed.xml",
+                "category": {"id": 3, "user_id": 1, "title": "Category"}
+            }
+        }))
+        .expect("valid test entry")
+    }
+
     #[test]
     fn layouts_render_across_terminal_sizes() {
         let mut app = test_app();
@@ -2099,5 +2131,36 @@ mod tests {
         );
         let text = render_text(&mut app, 80, 24);
         assert!(text.contains("▀"), "the image was not drawn: {text:?}");
+    }
+
+    #[test]
+    fn the_star_sits_on_the_metadata_line() {
+        let mut app = test_app();
+        app.entries = vec![starred_entry()];
+        app.entry_cursor = 0;
+        app.focus = Focus::Feeds;
+
+        // 80 columns with the Feeds pane focused draws feeds and entries only,
+        // so the reader header cannot supply a star of its own.
+        let text = render_text(&mut app, 80, 24);
+        let title_line = text
+            .lines()
+            .find(|line| line.contains("Starred entry"))
+            .expect("title line");
+        let meta_line = text
+            .lines()
+            .find(|line| line.contains("Feed X"))
+            .expect("meta line");
+        assert!(!title_line.contains('★'), "{title_line:?}");
+        assert!(meta_line.contains('★'), "{meta_line:?}");
+        assert!(meta_line.contains("3 min"), "{meta_line:?}");
+
+        app.entries[0].starred = false;
+        let text = render_text(&mut app, 80, 24);
+        let meta_line = text
+            .lines()
+            .find(|line| line.contains("Feed X"))
+            .expect("meta line");
+        assert!(!meta_line.contains('★'), "{meta_line:?}");
     }
 }
