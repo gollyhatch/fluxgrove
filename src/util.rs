@@ -4,6 +4,14 @@ use chrono::{DateTime, Datelike, Local, Utc};
 use html2text::render::TextDecorator;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// Decode HTML entities in feed-provided text such as titles.
+pub fn decode_entities(text: &str) -> String {
+    if !text.contains('&') {
+        return text.to_string();
+    }
+    html_escape::decode_html_entities(text).into_owned()
+}
+
 /// Convert sanitized feed HTML to readable plain text.
 pub fn html_to_text(html: &str) -> String {
     if html.trim().is_empty() {
@@ -394,6 +402,18 @@ mod tests {
     fn truncates_wide_text() {
         assert_eq!(truncate("hello", 3), "he…");
         assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn decodes_html_entities() {
+        assert_eq!(
+            decode_entities(
+                "Rock &#34;n&#34; Roll &amp; &#x27;Jazz&#x27; &mdash; live"
+            ),
+            "Rock \"n\" Roll & 'Jazz' — live"
+        );
+        assert_eq!(decode_entities("AT&T stays"), "AT&T stays");
+        assert_eq!(decode_entities("Plain title"), "Plain title");
     }
 
     #[test]

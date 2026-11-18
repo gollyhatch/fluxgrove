@@ -13,7 +13,10 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use url::Url;
 
-use crate::config::{Auth, Config};
+use crate::{
+    config::{Auth, Config},
+    util,
+};
 
 #[derive(Debug)]
 pub struct BootstrapData {
@@ -221,8 +224,8 @@ impl ApiClient {
             self.api.get_current_user(&self.http),
         )?;
         Ok(BootstrapData {
-            feeds,
-            categories,
+            feeds: feeds.into_iter().map(decode_feed).collect(),
+            categories: categories.into_iter().map(decode_category).collect(),
             counters,
             user_id: user.id,
         })
@@ -246,7 +249,11 @@ impl ApiClient {
                         events,
                         ApiEvent::Entries {
                             generation,
-                            entries: batch.entries,
+                            entries: batch
+                                .entries
+                                .into_iter()
+                                .map(decode_entry)
+                                .collect(),
                             total: batch.total,
                         },
                     ),
@@ -318,7 +325,10 @@ impl ApiClient {
                     Ok(subscriptions) => send(
                         events,
                         ApiEvent::FeedsDiscovered {
-                            subscriptions,
+                            subscriptions: subscriptions
+                                .into_iter()
+                                .map(decode_subscription)
+                                .collect(),
                             category_id,
                             source_url: url,
                         },
@@ -345,9 +355,10 @@ impl ApiClient {
             }
             ApiCommand::UpdateFeed { id, changes } => {
                 match self.update_feed(id, &changes).await {
-                    Ok(feed) => {
-                        send(events, ApiEvent::FeedUpdated(Box::new(feed)))
-                    }
+                    Ok(feed) => send(
+                        events,
+                        ApiEvent::FeedUpdated(Box::new(decode_feed(feed))),
+                    ),
                     Err(error) => {
                         send_error(events, "Could not update the feed", error);
                     }
@@ -447,6 +458,28 @@ impl ApiClient {
             }
         }
     }
+}
+
+fn decode_feed(mut feed: Feed) -> Feed {
+    feed.title = util::decode_entities(&feed.title);
+    feed.category.title = util::decode_entities(&feed.category.title);
+    feed
+}
+
+fn decode_category(mut category: Category) -> Category {
+    category.title = util::decode_entities(&category.title);
+    category
+}
+
+fn decode_entry(mut entry: Entry) -> Entry {
+    entry.title = util::decode_entities(&entry.title);
+    entry.feed.title = util::decode_entities(&entry.feed.title);
+    entry
+}
+
+fn decode_subscription(mut subscription: Subscription) -> Subscription {
+    subscription.title = util::decode_entities(&subscription.title);
+    subscription
 }
 
 /// Spawn the API worker and return the command sender / event receiver pair.
@@ -879,6 +912,126 @@ mod tests {
             .expect("server finished")
             .expect("server task");
         assert_eq!(request_line, "GET /v1/feeds/counters HTTP/1.1");
+    }
+
+    async fn serve_json_once(
+        listener: TcpListener,
+        response: serde_json::Value,
+    ) -> String {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let (headers, _body) = read_http_request(&mut socket).await;
+        let request_line =
+            headers.lines().next().unwrap_or_default().to_string();
+        let body = response.to_string();
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket
+            .write_all(reply.as_bytes())
+            .await
+            .expect("write response");
+        request_line
+    }
+
+    #[tokio::test]
+    async fn loaded_entries_have_decoded_titles() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let mut entry = entry_json(true);
+        entry["title"] = serde_json::json!("An &#34;entry&#34;");
+        let server = tokio::spawn(serve_json_once(
+            listener,
+            serde_json::json!({"total": 1, "entries": [entry]}),
+        ));
+
+        let client =
+            ApiClient::new(&test_config(&format!("http://{address}/")))
+                .expect("api client");
+        let (events, mut received) = mpsc::unbounded_channel();
+        client
+            .run(
+                ApiCommand::LoadEntries {
+                    filter: Box::new(EntryFilter::default()),
+                    generation: 7,
+                },
+                &events,
+            )
+            .await;
+
+        let event = received.recv().await.expect("an event");
+        match event {
+            ApiEvent::Entries {
+                generation,
+                entries,
+                total,
+            } => {
+                assert_eq!(generation, 7);
+                assert_eq!(total, 1);
+                assert_eq!(entries[0].title, "An \"entry\"");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let request_line = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server finished")
+            .expect("server task");
+        assert!(request_line.starts_with("GET /v1/entries"));
+    }
+
+    #[test]
+    fn feed_titles_lose_entities_when_decoded() {
+        let mut value = feed_json("Feed &amp; &#34;Co&#34;");
+        value["category"]["title"] = serde_json::json!("Cat &amp; Dog");
+        let feed: Feed = serde_json::from_value(value).expect("feed");
+
+        let decoded = decode_feed(feed);
+
+        assert_eq!(decoded.title, "Feed & \"Co\"");
+        assert_eq!(decoded.category.title, "Cat & Dog");
+    }
+
+    #[test]
+    fn entry_titles_and_feed_titles_lose_entities_when_decoded() {
+        let mut value = entry_json(true);
+        value["title"] = serde_json::json!("An &#34;entry&#34; &amp; more");
+        value["feed"]["title"] = serde_json::json!("Feed &amp; Co");
+        let entry: Entry = serde_json::from_value(value).expect("entry");
+
+        let decoded = decode_entry(entry);
+
+        assert_eq!(decoded.title, "An \"entry\" & more");
+        assert_eq!(decoded.feed.title, "Feed & Co");
+    }
+
+    #[test]
+    fn subscription_titles_lose_entities_when_decoded() {
+        let subscription = Subscription {
+            url: "https://example.com/feed.xml".to_string(),
+            title: "Q&amp;A &#x27;daily&#x27;".to_string(),
+            kind: "rss".to_string(),
+        };
+
+        let decoded = decode_subscription(subscription);
+
+        assert_eq!(decoded.title, "Q&A 'daily'");
+    }
+
+    #[test]
+    fn category_titles_lose_entities_when_decoded() {
+        let category: Category = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "user_id": 1,
+            "title": "Q&amp;A"
+        }))
+        .expect("category");
+
+        assert_eq!(decode_category(category).title, "Q&A");
     }
 
     #[test]
