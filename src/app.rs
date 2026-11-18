@@ -18,8 +18,6 @@ use crate::{
     util,
 };
 
-pub const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
     Feeds,
@@ -377,7 +375,6 @@ pub struct App {
     pub mode: Mode,
     pub status: Option<StatusMessage>,
     pub loading: bool,
-    pub spinner: usize,
     pub bootstrapped: bool,
 
     pub article_text: String,
@@ -443,7 +440,6 @@ impl App {
             mode: Mode::Normal,
             status: None,
             loading: false,
-            spinner: 0,
             bootstrapped: false,
             article_text: String::new(),
             article_parts: Vec::new(),
@@ -644,10 +640,6 @@ impl App {
             }
             _ => self.entries.len().to_string(),
         }
-    }
-
-    pub fn theme_display_name(&self) -> &str {
-        &self.theme.meta.name
     }
 
     // ── Key handling ─────────────────────────────────────────────────
@@ -2460,10 +2452,6 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        if self.loading {
-            self.spinner = (self.spinner + 1) % SPINNER.len();
-            self.dirty = true;
-        }
         if let Some(status) = &self.status
             && status
                 .expires
@@ -2471,14 +2459,6 @@ impl App {
         {
             self.status = None;
             self.dirty = true;
-        }
-    }
-
-    pub fn spinner_frame(&self) -> &'static str {
-        if self.loading {
-            SPINNER[self.spinner % SPINNER.len()]
-        } else {
-            "·"
         }
     }
 }

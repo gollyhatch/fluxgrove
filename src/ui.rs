@@ -1,7 +1,7 @@
 use miniflux_api::models::EntryStatus;
 use opaline::{
     Theme,
-    names::{gradients, styles, tokens},
+    names::{styles, tokens},
 };
 use ratatui::{
     Frame,
@@ -124,17 +124,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Block::default().style(pal.base()), area);
 
     let rows = Layout::vertical([
-        Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(area);
 
-    draw_header(frame, app, rows[0], &pal);
-    draw_body(frame, app, rows[1], &pal);
-    draw_status(frame, app, rows[2], &pal);
-    draw_keybar(frame, app, rows[3], &pal);
+    draw_body(frame, app, rows[0], &pal);
+    draw_status(frame, app, rows[1], &pal);
+    draw_keybar(frame, app, rows[2], &pal);
 
     if matches!(app.mode, Mode::Help { .. }) {
         draw_help(frame, app, area, &pal);
@@ -150,57 +148,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if matches!(app.mode, Mode::EditFeed { .. }) {
         // Keep the status line and key bar visible while editing.
-        draw_feed_editor(frame, app, rows[1], &pal);
-        draw_category_picker(frame, app, rows[1], &pal);
-        draw_feed_delete_confirm(frame, app, rows[1], &pal);
+        draw_feed_editor(frame, app, rows[0], &pal);
+        draw_category_picker(frame, app, rows[0], &pal);
+        draw_feed_delete_confirm(frame, app, rows[0], &pal);
     }
-}
-
-fn draw_header(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
-    frame.render_widget(Block::default().style(pal.base()), area);
-    let right_width = (area.width / 2).clamp(12, 48);
-    let chunks = Layout::horizontal([
-        Constraint::Min(10),
-        Constraint::Length(right_width),
-    ])
-    .split(area);
-
-    let brand = if pal.theme.has_gradient(gradients::PRIMARY) {
-        pal.theme.gradient_text(gradients::PRIMARY, "fluxgrove")
-    } else {
-        Line::from(Span::styled("fluxgrove", pal.heading()))
-    };
-
-    let mut left_spans = vec![Span::raw(" ")];
-    left_spans.extend(brand.spans);
-    left_spans.push(Span::styled("  ›  ", pal.dim()));
-    left_spans.push(Span::styled(app.selection_label(), pal.strong()));
-    if !app.search.is_empty() {
-        left_spans.push(Span::styled(
-            format!("  /{}", util::truncate(&app.search, 24)),
-            pal.muted(),
-        ));
-    }
-
-    frame.render_widget(
-        Paragraph::new(Line::from(left_spans)).style(pal.base()),
-        chunks[0],
-    );
-
-    let right = format!(
-        "{}  {} unread  ·  {} ",
-        app.spinner_frame(),
-        app.unread_total(),
-        util::truncate(app.theme_display_name(), 28)
-    );
-    frame.render_widget(
-        Paragraph::new(
-            Line::from(Span::styled(right, pal.muted()))
-                .alignment(Alignment::Right),
-        )
-        .style(pal.base()),
-        chunks[1],
-    );
 }
 
 fn draw_body(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
@@ -357,11 +308,12 @@ fn draw_entries(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     } else {
         app.entry_counter_label()
     };
-    let entries_title = fitted_title(
-        &app.selection_label(),
-        Some(&entries_counter),
-        area.width,
-    );
+    let mut entries_heading = app.selection_label();
+    if !app.search.is_empty() {
+        entries_heading.push_str(&format!(" /{}", app.search));
+    }
+    let entries_title =
+        fitted_title(&entries_heading, Some(&entries_counter), area.width);
     let block =
         pane_block(&entries_title, Some(entries_counter), focused, pal, false);
 
@@ -2227,7 +2179,7 @@ mod tests {
         // At 80 columns with the Entries pane focused only the entries and
         // reader panes are drawn, so the sidebar cannot supply these titles.
         let text = render_text(&mut app, 80, 24);
-        let borders = text.lines().nth(1).expect("pane borders");
+        let borders = text.lines().next().expect("pane borders");
 
         assert!(borders.contains("My Feed"), "{borders:?}");
         assert!(borders.contains("Starred entry"), "{borders:?}");
@@ -2237,9 +2189,14 @@ mod tests {
         app.selection = Selection::Unread;
         app.entries.clear();
         let text = render_text(&mut app, 80, 24);
-        let borders = text.lines().nth(1).expect("pane borders");
+        let borders = text.lines().next().expect("pane borders");
         assert!(borders.contains("Unread"), "{borders:?}");
         assert!(borders.contains("Reader"), "{borders:?}");
+
+        app.search = "rust".to_string();
+        let text = render_text(&mut app, 80, 24);
+        let borders = text.lines().next().expect("pane borders");
+        assert!(borders.contains("Unread /rust"), "{borders:?}");
     }
 
     #[test]
