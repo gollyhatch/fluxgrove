@@ -553,15 +553,12 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
+    // The pane header carries the title; the body starts with the metadata.
     let title = if title.trim().is_empty() {
         "(untitled)".to_string()
     } else {
         title
     };
-    for line in util::wrap_text(&title, inner_width) {
-        lines.push(Line::from(Span::styled(line, pal.heading())));
-    }
-    lines.push(Line::from(""));
 
     let mut meta_parts: Vec<String> = Vec::new();
     if !author.trim().is_empty() {
