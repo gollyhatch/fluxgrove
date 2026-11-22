@@ -22,7 +22,8 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
 
 - Three-pane feed / entry / reader layout that adapts to narrow terminals.
 - Starts on the Unread view, with Unread at the top of the feed panel.
-- Vim motions: `j`/`k`, `h`/`l`, `g`/`G`, `Ctrl-d`/`Ctrl-u`, `Ctrl-f`/`Ctrl-b`.
+- Vim motions: `j`/`k`, `h`/`l`, `g`/`G`, `d`/`u` or `Ctrl-d`/`Ctrl-u`,
+  `Ctrl-f`/`Ctrl-b`.
 - Entry list shows the article title plus feed / age / reading time.
 - Long titles wrap to the available width instead of being clipped.
 - Embedded article images in the reading view, drawn with block graphics and
@@ -141,7 +142,7 @@ make it stick.
 | `p` | Jump to the feed of the selected entry and show its entries |
 | `f` in Feeds | Hide / show feeds without unread items |
 | `f` in Entries | Hide / show read articles |
-| `Ctrl-d` / `Ctrl-u` | Half page down / up |
+| `d` / `u` or `Ctrl-d` / `Ctrl-u` | Half page down / up (in the reader) |
 | `PgUp` / `PgDn` | Page up / down |
 | `Ctrl-f` / `Ctrl-b` | Full page down / up |
 | `Enter` | Confirm: feeds → entries, entries → reader |

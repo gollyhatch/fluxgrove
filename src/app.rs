@@ -925,6 +925,12 @@ impl App {
 
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.move_up(),
+            KeyCode::Char('d') if self.focus == Focus::Article => {
+                self.half_page_down();
+            }
+            KeyCode::Char('u') if self.focus == Focus::Article => {
+                self.half_page_up();
+            }
             KeyCode::PageDown => self.full_page_down(),
             KeyCode::PageUp => self.full_page_up(),
 
@@ -2985,6 +2991,27 @@ mod tests {
 
         press(&mut app, KeyCode::PageUp);
         assert_eq!(app.article_scroll, 0);
+    }
+
+    #[test]
+    fn d_and_u_scroll_the_reader_by_half_a_page() {
+        let (mut app, _rx) = test_app();
+        app.focus = Focus::Article;
+        app.article_page = 10;
+        app.article_max_scroll = 100;
+        app.article_scroll = 20;
+
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.article_scroll, 25);
+
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.article_scroll, 20);
+
+        app.entries =
+            vec![render_entry(1, "unread"), render_entry(2, "unread")];
+        app.focus = Focus::Entries;
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.entry_cursor, 0);
     }
 
     #[test]
