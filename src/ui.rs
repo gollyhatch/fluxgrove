@@ -1754,6 +1754,7 @@ mod tests {
             hide_read_feeds: false,
             hide_read_entries: false,
             images: false,
+            browser: None,
         };
         let theme = opaline::builtins::load_by_name("catppuccin-mocha")
             .expect("builtin theme");

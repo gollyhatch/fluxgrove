@@ -91,6 +91,7 @@ pub struct Config {
     pub hide_read_feeds: bool,
     pub hide_read_entries: bool,
     pub images: bool,
+    pub browser: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -106,6 +107,7 @@ struct FileConfig {
     hide_read_feeds: Option<bool>,
     hide_read_entries: Option<bool>,
     images: Option<bool>,
+    browser: Option<String>,
 }
 
 pub const DEFAULT_THEME: &str = "catppuccin-mocha";
@@ -208,6 +210,7 @@ impl Config {
             hide_read_feeds: file.hide_read_feeds.unwrap_or(false),
             hide_read_entries: file.hide_read_entries.unwrap_or(false),
             images: file.images.unwrap_or(false),
+            browser: file.browser.filter(|browser| !browser.trim().is_empty()),
         })
     }
 }
@@ -368,6 +371,30 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         assert!(Config::load(&cli(Some(path))).is_err());
+    }
+
+    #[test]
+    fn browser_is_optional_and_ignores_blank_values() {
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"t\"\n",
+        );
+        let config = Config::load(&cli(Some(file.0.clone()))).expect("load");
+        assert_eq!(config.browser, None);
+
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"t\"\nbrowser = \"firefox --new-window %s\"\n",
+        );
+        let config = Config::load(&cli(Some(file.0.clone()))).expect("load");
+        assert_eq!(
+            config.browser.as_deref(),
+            Some("firefox --new-window %s")
+        );
+
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"t\"\nbrowser = \"  \"\n",
+        );
+        let config = Config::load(&cli(Some(file.0.clone()))).expect("load");
+        assert_eq!(config.browser, None);
     }
 
     #[test]

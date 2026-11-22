@@ -89,7 +89,12 @@ mark_read = true        # mark an entry read when you open it in the reader
 hide_read_feeds = false  # hide feeds with no unread items by default
 hide_read_entries = false # hide read articles in the entries panel by default
 images = false           # start with embedded images shown (toggle in-app with i)
+browser = "firefox"      # browser for `o` instead of xdg-open; $BROWSER otherwise
 ```
+
+`browser` may include arguments and a `%s` placeholder for the URL, for example
+`browser = "firefox --new-window %s"`. It takes precedence over `$BROWSER`;
+`Ctrl-o` still opens the XDG default browser.
 
 Generate an API token in Miniflux under **Settings → API Keys**.
 

@@ -2133,7 +2133,7 @@ impl App {
             return;
         };
         let url = entry.url.clone();
-        match util::open_in_browser(&url) {
+        match util::open_in_browser(&url, self.config.browser.as_deref()) {
             Ok(()) => {
                 self.set_status(StatusKind::Success, "Opened in your browser")
             }
@@ -2657,6 +2657,7 @@ mod tests {
             hide_read_feeds: false,
             hide_read_entries: false,
             images: false,
+            browser: None,
         }
     }
 

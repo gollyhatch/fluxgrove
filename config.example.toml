@@ -17,6 +17,10 @@ hide_read_entries = false
 # Start with images shown in the reading view. Press i to toggle them.
 images = false
 
+# Browser used by `o`, instead of the system default (xdg-open). Supports
+# arguments and %s; $BROWSER is used when this is unset.
+# browser = "firefox"
+
 # Instead of a token you can use username/password authentication:
 # username = "demo"
 # password = "secret"

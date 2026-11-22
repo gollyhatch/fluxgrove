@@ -662,6 +662,7 @@ mod tests {
             hide_read_feeds: false,
             hide_read_entries: false,
             images: false,
+            browser: None,
         }
     }
 

@@ -338,11 +338,22 @@ pub fn format_datetime(when: DateTime<Utc>) -> String {
 
 /// Open a URL in the user's preferred browser without blocking the TUI.
 ///
-/// `$BROWSER` is honoured when set; otherwise the platform opener is used.
-pub fn open_in_browser(url: &str) -> std::io::Result<()> {
-    if let Some(browser) = std::env::var_os("BROWSER")
-        && let Some((program, args)) = browser_command(&browser, url)
-    {
+/// A browser configured with the `browser` setting wins over `$BROWSER`;
+/// otherwise `$BROWSER` is honoured when set, and finally the platform opener
+/// is used.
+pub fn open_in_browser(
+    url: &str,
+    configured_browser: Option<&str>,
+) -> std::io::Result<()> {
+    let configured = configured_browser
+        .map(std::ffi::OsStr::new)
+        .and_then(|browser| browser_command(browser, url));
+    let from_env = || {
+        std::env::var_os("BROWSER")
+            .and_then(|browser| browser_command(&browser, url))
+    };
+
+    if let Some((program, args)) = configured.or_else(from_env) {
         match spawn_detached(&program, &args) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -380,7 +391,7 @@ pub fn open_in_xdg_browser(url: &str) -> std::io::Result<()> {
         ));
     }
 
-    open_in_browser(url)
+    open_in_browser(url, None)
 }
 
 fn platform_opener(url: &str) -> (&'static str, Vec<&str>) {
