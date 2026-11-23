@@ -2011,9 +2011,11 @@ impl App {
                 self.dirty = true;
             }
             Focus::Entries => {
-                if self.selected_entry().is_some() {
+                if let Some(id) = self.selected_entry().map(|entry| entry.id) {
                     self.focus = Focus::Article;
-                    self.article_scroll = 0;
+                    if self.article_entry != Some(id) {
+                        self.article_scroll = 0;
+                    }
                     self.mark_selected_if_unread();
                     self.dirty = true;
                 }
@@ -3012,6 +3014,30 @@ mod tests {
         app.focus = Focus::Entries;
         press(&mut app, KeyCode::Char('d'));
         assert_eq!(app.entry_cursor, 0);
+    }
+
+    #[test]
+    fn reader_scroll_survives_switching_panes_until_the_entry_changes() {
+        let (mut app, _rx) = test_app();
+        app.entries =
+            vec![render_entry(1, "unread"), render_entry(2, "unread")];
+        app.entry_cursor = 0;
+        app.article_entry = Some(EntryID(1));
+        app.article_scroll = 42;
+        app.focus = Focus::Article;
+
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.focus, Focus::Entries);
+
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.focus, Focus::Article);
+        assert_eq!(app.article_scroll, 42);
+
+        press(&mut app, KeyCode::Char('h'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.entry_cursor, 1);
+        assert_eq!(app.article_scroll, 0);
     }
 
     #[test]
