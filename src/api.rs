@@ -663,6 +663,8 @@ mod tests {
             hide_read_entries: false,
             images: false,
             browser: None,
+            reader_margin_horizontal: 1,
+            reader_margin_vertical: 0,
         }
     }
 

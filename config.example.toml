@@ -21,6 +21,11 @@ images = false
 # arguments and %s; $BROWSER is used when this is unset.
 # browser = "firefox"
 
+# Empty space around the reading pane: columns on each side (default 1) and
+# lines at the top and bottom (default 0).
+# reader_margin_horizontal = 1
+# reader_margin_vertical = 0
+
 # Instead of a token you can use username/password authentication:
 # username = "demo"
 # password = "secret"

@@ -91,6 +91,8 @@ hide_read_feeds = false  # hide feeds with no unread items by default
 hide_read_entries = false # hide read articles in the entries panel by default
 images = false           # start with embedded images shown (toggle in-app with i)
 browser = "firefox"      # browser for `o` instead of xdg-open; $BROWSER otherwise
+reader_margin_horizontal = 1  # spaces on each side of the reading pane
+reader_margin_vertical = 0    # blank lines above and below the reading pane
 ```
 
 `browser` may include arguments and a `%s` placeholder for the URL, for example

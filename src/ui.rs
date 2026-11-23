@@ -485,8 +485,28 @@ fn entry_item(
 
 fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     let focused = app.focus == Focus::Article;
-    let inner_width = area.width.saturating_sub(2).max(1) as usize;
-    let inner_height = area.height.saturating_sub(2) as usize;
+    let margin_horizontal = app.config.reader_margin_horizontal;
+    let margin_vertical = app.config.reader_margin_vertical;
+    let content_width = u32::from(area.width)
+        .saturating_sub(2 + u32::from(margin_horizontal) * 2)
+        .max(1) as u16;
+    let content_height = u32::from(area.height)
+        .saturating_sub(2 + u32::from(margin_vertical) * 2) as u16;
+    let content = Rect {
+        x: area
+            .x
+            .saturating_add(1)
+            .saturating_add(margin_horizontal),
+        y: area
+            .y
+            .saturating_add(1)
+            .saturating_add(margin_vertical),
+        width: content_width,
+        height: content_height,
+    }
+    .intersection(area);
+    let inner_width = (content.width as usize).max(1);
+    let inner_height = content.height as usize;
 
     let Some((
         title,
@@ -673,18 +693,22 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     let reader_title = fitted_title(&title, Some(&percent_label), area.width);
     let block =
         pane_block(&reader_title, Some(percent_label), focused, pal, true);
+    frame.render_widget(block, area);
 
     let paragraph = Paragraph::new(lines)
         .style(pal.panel())
-        .scroll((scroll, 0))
-        .block(block);
+        .scroll((scroll, 0));
+    frame.render_widget(paragraph, content);
 
-    frame.render_widget(paragraph, area);
-
-    for placement in &images {
-        if let Some(LoadedImage::Ready(image)) = app.images.get(&placement.url)
-        {
-            render_article_image(frame, image, placement, scroll, area, pal);
+    if !content.is_empty() {
+        for placement in &images {
+            if let Some(LoadedImage::Ready(image)) =
+                app.images.get(&placement.url)
+            {
+                render_article_image(
+                    frame, image, placement, scroll, content, pal,
+                );
+            }
         }
     }
 }
@@ -721,10 +745,10 @@ fn render_article_image(
     image: &api::DecodedImage,
     placement: &ImagePlacement,
     scroll: u16,
-    area: Rect,
+    content: Rect,
     pal: &Palette,
 ) {
-    let inner_height = area.height.saturating_sub(2) as usize;
+    let inner_height = content.height as usize;
     let offset = placement.start as isize - scroll as isize;
     let first = offset.max(0) as usize;
     let last = (offset + placement.rows as isize)
@@ -737,7 +761,7 @@ fn render_article_image(
     let buffer = frame.buffer_mut();
     for screen_row in first..last {
         let image_row = (screen_row as isize - offset) as usize;
-        let y = area.y + 1 + screen_row as u16;
+        let y = content.y + screen_row as u16;
         for x in 0..placement.width {
             let top = blend_pixel(
                 sample_image(image, placement, x, image_row * 2),
@@ -747,7 +771,9 @@ fn render_article_image(
                 sample_image(image, placement, x, image_row * 2 + 1),
                 background,
             );
-            if let Some(cell) = buffer.cell_mut((area.x + 1 + x as u16, y)) {
+            if let Some(cell) =
+                buffer.cell_mut((content.x + x as u16, y))
+            {
                 cell.set_symbol("▀");
                 cell.set_fg(top);
                 cell.set_bg(bottom);
@@ -1777,6 +1803,8 @@ mod tests {
             hide_read_entries: false,
             images: false,
             browser: None,
+            reader_margin_horizontal: 1,
+            reader_margin_vertical: 0,
         };
         let theme = opaline::builtins::load_by_name("catppuccin-mocha")
             .expect("builtin theme");
@@ -2285,6 +2313,42 @@ mod tests {
         assert!(!text.contains("Library Category"), "{text:?}");
         assert!(!text.contains("Sidebar Feed"), "{text:?}");
         assert!(text.contains("Starred entry"), "{text:?}");
+    }
+
+    #[test]
+    fn reader_margins_offset_the_article_content() {
+        let mut app = test_app();
+        let mut entry = starred_entry();
+        entry.author = "Margin Author".to_string();
+        app.entries = vec![entry];
+        app.entry_cursor = 0;
+        app.entry_state.select(Some(0));
+        app.focus = Focus::Article;
+        app.ensure_article();
+
+        let position = |text: &str| {
+            text.lines()
+                .enumerate()
+                .find_map(|(row, line)| {
+                    line.find("Margin Author").map(|column| {
+                        (row, util::display_width(&line[..column]))
+                    })
+                })
+                .expect("author in the reader")
+        };
+
+        app.config.reader_margin_horizontal = 0;
+        app.config.reader_margin_vertical = 0;
+        let text = render_text(&mut app, 120, 24);
+        let (row, column) = position(&text);
+
+        app.config.reader_margin_horizontal = 2;
+        app.config.reader_margin_vertical = 1;
+        let text = render_text(&mut app, 120, 24);
+        let (margin_row, margin_column) = position(&text);
+
+        assert_eq!(margin_row, row + 1);
+        assert_eq!(margin_column, column + 2);
     }
 
     #[test]

@@ -92,6 +92,8 @@ pub struct Config {
     pub hide_read_entries: bool,
     pub images: bool,
     pub browser: Option<String>,
+    pub reader_margin_horizontal: u16,
+    pub reader_margin_vertical: u16,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -108,10 +110,14 @@ struct FileConfig {
     hide_read_entries: Option<bool>,
     images: Option<bool>,
     browser: Option<String>,
+    reader_margin_horizontal: Option<u16>,
+    reader_margin_vertical: Option<u16>,
 }
 
 pub const DEFAULT_THEME: &str = "catppuccin-mocha";
 pub const DEFAULT_LIMIT: i64 = 100;
+pub const DEFAULT_READER_MARGIN_HORIZONTAL: u16 = 1;
+pub const DEFAULT_READER_MARGIN_VERTICAL: u16 = 0;
 
 pub fn default_config_path() -> PathBuf {
     dirs::config_dir()
@@ -211,6 +217,12 @@ impl Config {
             hide_read_entries: file.hide_read_entries.unwrap_or(false),
             images: file.images.unwrap_or(false),
             browser: file.browser.filter(|browser| !browser.trim().is_empty()),
+            reader_margin_horizontal: file
+                .reader_margin_horizontal
+                .unwrap_or(DEFAULT_READER_MARGIN_HORIZONTAL),
+            reader_margin_vertical: file
+                .reader_margin_vertical
+                .unwrap_or(DEFAULT_READER_MARGIN_VERTICAL),
         })
     }
 }
@@ -395,6 +407,23 @@ mod tests {
         );
         let config = Config::load(&cli(Some(file.0.clone()))).expect("load");
         assert_eq!(config.browser, None);
+    }
+
+    #[test]
+    fn reader_margins_default_to_one_space_and_no_lines() {
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"t\"\n",
+        );
+        let config = Config::load(&cli(Some(file.0.clone()))).expect("load");
+        assert_eq!(config.reader_margin_horizontal, 1);
+        assert_eq!(config.reader_margin_vertical, 0);
+
+        let file = TempConfig::new(
+            "url = \"https://reader.example.com\"\ntoken = \"t\"\nreader_margin_horizontal = 3\nreader_margin_vertical = 2\n",
+        );
+        let config = Config::load(&cli(Some(file.0.clone()))).expect("load");
+        assert_eq!(config.reader_margin_horizontal, 3);
+        assert_eq!(config.reader_margin_vertical, 2);
     }
 
     #[test]
