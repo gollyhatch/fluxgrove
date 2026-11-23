@@ -26,20 +26,24 @@ pub enum Focus {
 }
 
 impl Focus {
-    pub fn next(self, has_entries: bool) -> Self {
+    pub fn next(self, has_entries: bool, has_library: bool) -> Self {
         match self {
             Self::Feeds => Self::Entries,
             Self::Entries if has_entries => Self::Article,
-            Self::Entries => Self::Feeds,
-            Self::Article => Self::Feeds,
+            Self::Entries if has_library => Self::Feeds,
+            Self::Entries => Self::Entries,
+            Self::Article if has_library => Self::Feeds,
+            Self::Article => Self::Entries,
         }
     }
 
-    pub fn previous(self, has_entries: bool) -> Self {
+    pub fn previous(self, has_entries: bool, has_library: bool) -> Self {
         match self {
             Self::Feeds if has_entries => Self::Article,
             Self::Feeds => Self::Entries,
-            Self::Entries => Self::Feeds,
+            Self::Entries if has_library => Self::Feeds,
+            Self::Entries if has_entries => Self::Article,
+            Self::Entries => Self::Entries,
             Self::Article => Self::Entries,
         }
     }
@@ -555,6 +559,7 @@ pub struct App {
     pub search: String,
     pub feed_filter: String,
     pub focus: Focus,
+    pub show_library: bool,
     pub mode: Mode,
     pub status: Option<StatusMessage>,
     pub loading: bool,
@@ -620,6 +625,7 @@ impl App {
             search: String::new(),
             feed_filter: String::new(),
             focus: Focus::Feeds,
+            show_library: true,
             mode: Mode::Normal,
             status: None,
             loading: false,
@@ -937,14 +943,21 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => self.focus_left(),
             KeyCode::Char('l') | KeyCode::Right => self.focus_right(),
             KeyCode::Tab => {
-                self.focus = self.focus.next(!self.entries.is_empty());
+                self.focus = self
+                    .focus
+                    .next(!self.entries.is_empty(), self.show_library);
                 self.dirty = true;
             }
             KeyCode::BackTab => {
-                self.focus = self.focus.previous(!self.entries.is_empty());
+                self.focus = self.focus.previous(
+                    !self.entries.is_empty(),
+                    self.show_library,
+                );
                 self.dirty = true;
             }
-            KeyCode::Char('1') => self.focus = Focus::Feeds,
+            KeyCode::Char('1') if self.show_library => {
+                self.focus = Focus::Feeds;
+            }
             KeyCode::Char('2') => self.focus = Focus::Entries,
             KeyCode::Char('3') => {
                 if self.selected_entry().is_some() {
@@ -973,6 +986,7 @@ impl App {
             KeyCode::Char('E') => self.edit_selected(),
             KeyCode::Char('p') => self.jump_to_entry_feed(),
             KeyCode::Char('i') => self.toggle_images(),
+            KeyCode::Char('L') => self.toggle_library(),
             KeyCode::Char(' ') if self.focus == Focus::Article => {
                 self.scroll_to_next_paragraph();
             }
@@ -1987,7 +2001,8 @@ impl App {
     fn focus_left(&mut self) {
         self.focus = match self.focus {
             Focus::Article => Focus::Entries,
-            Focus::Entries => Focus::Feeds,
+            Focus::Entries if self.show_library => Focus::Feeds,
+            Focus::Entries => Focus::Entries,
             Focus::Feeds => Focus::Feeds,
         };
         self.dirty = true;
@@ -2568,6 +2583,22 @@ impl App {
         self.dirty = true;
     }
 
+    fn toggle_library(&mut self) {
+        self.show_library = !self.show_library;
+        if !self.show_library && self.focus == Focus::Feeds {
+            self.focus = Focus::Entries;
+        }
+        self.set_status(
+            StatusKind::Info,
+            if self.show_library {
+                "Showing the library pane"
+            } else {
+                "Hiding the library pane"
+            },
+        );
+        self.dirty = true;
+    }
+
     fn request_article_images(&mut self) {
         if !self.show_images {
             return;
@@ -3038,6 +3069,28 @@ mod tests {
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(app.entry_cursor, 1);
         assert_eq!(app.article_scroll, 0);
+    }
+
+    #[test]
+    fn l_hides_the_library_and_keeps_focus_on_a_visible_pane() {
+        let (mut app, _rx) = test_app();
+        app.focus = Focus::Feeds;
+
+        press(&mut app, KeyCode::Char('L'));
+        assert!(!app.show_library);
+        assert_eq!(app.focus, Focus::Entries);
+
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.focus, Focus::Entries);
+        press(&mut app, KeyCode::Char('1'));
+        assert_eq!(app.focus, Focus::Entries);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Entries);
+
+        press(&mut app, KeyCode::Char('L'));
+        assert!(app.show_library);
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.focus, Focus::Feeds);
     }
 
     #[test]

@@ -159,23 +159,37 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn draw_body(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
     if area.width >= 100 {
-        let sidebar_width = (area.width / 4).clamp(22, 30);
-        let remaining = area.width - sidebar_width;
-        let entries_width = ((remaining as f32) * 0.38) as u16;
-        let entries_width =
-            entries_width.clamp(28, (remaining.saturating_sub(26)).max(28));
-        let chunks = Layout::horizontal([
-            Constraint::Length(sidebar_width),
-            Constraint::Length(entries_width),
-            Constraint::Min(26),
-        ])
-        .split(area);
+        if app.show_library {
+            let sidebar_width = (area.width / 4).clamp(22, 30);
+            let remaining = area.width - sidebar_width;
+            let entries_width = ((remaining as f32) * 0.38) as u16;
+            let entries_width = entries_width
+                .clamp(28, (remaining.saturating_sub(26)).max(28));
+            let chunks = Layout::horizontal([
+                Constraint::Length(sidebar_width),
+                Constraint::Length(entries_width),
+                Constraint::Min(26),
+            ])
+            .split(area);
 
-        draw_feeds(frame, app, chunks[0], pal);
-        draw_entries(frame, app, chunks[1], pal);
-        draw_article(frame, app, chunks[2], pal);
+            draw_feeds(frame, app, chunks[0], pal);
+            draw_entries(frame, app, chunks[1], pal);
+            draw_article(frame, app, chunks[2], pal);
+        } else {
+            let entries_width = ((area.width as f32) * 0.38) as u16;
+            let entries_width = entries_width
+                .clamp(28, (area.width.saturating_sub(26)).max(28));
+            let chunks = Layout::horizontal([
+                Constraint::Length(entries_width),
+                Constraint::Min(26),
+            ])
+            .split(area);
+
+            draw_entries(frame, app, chunks[0], pal);
+            draw_article(frame, app, chunks[1], pal);
+        }
     } else if area.width >= 66 {
-        if app.focus == Focus::Feeds {
+        if app.show_library && app.focus == Focus::Feeds {
             let sidebar_width = 24.min(area.width / 3);
             let chunks = Layout::horizontal([
                 Constraint::Length(sidebar_width),
@@ -196,12 +210,16 @@ fn draw_body(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
         }
     } else {
         match app.focus {
-            Focus::Feeds => draw_feeds(frame, app, area, pal),
+            Focus::Feeds if app.show_library => {
+                draw_feeds(frame, app, area, pal)
+            }
             Focus::Entries => draw_entries(frame, app, area, pal),
             Focus::Article if app.selected_entry().is_some() => {
                 draw_article(frame, app, area, pal)
             }
-            Focus::Article => draw_entries(frame, app, area, pal),
+            Focus::Article | Focus::Feeds => {
+                draw_entries(frame, app, area, pal)
+            }
         }
     }
 }
@@ -948,6 +966,7 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
             Focus::Feeds => &[
                 ("j/k", "select"),
                 ("l", "entries"),
+                ("L", "library"),
                 ("n", "new feed"),
                 ("E", "edit feed"),
                 ("/", "filter"),
@@ -973,6 +992,7 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
             Focus::Entries => &[
                 ("j/k", "move"),
                 ("Enter", "read"),
+                ("L", "library"),
                 (
                     "f",
                     if app.hide_read_entries {
@@ -996,6 +1016,7 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect, pal: &Palette) {
             ],
             Focus::Article => &[
                 ("j/k", "scroll"),
+                ("L", "library"),
                 ("Space", "paragraph"),
                 ("J/K", "next/prev"),
                 ("g/G", "top/end"),
@@ -1152,6 +1173,7 @@ fn help_rows() -> Vec<HelpRow> {
         Key("j / k", "move cursor, scroll article"),
         Key("h / l", "focus pane left / right"),
         Key("Tab", "cycle panes"),
+        Key("L", "show / hide the library pane"),
         Key("1 / 2 / 3", "focus feeds / entries / reader"),
         Key("g / G", "go to top / bottom"),
         Key("n", "subscribe to a website (feeds are detected)"),
@@ -2240,6 +2262,29 @@ mod tests {
         assert_eq!(image_geometry(&image(4, 4), 80), (80, 40));
         assert_eq!(image_geometry(&image(1000, 10), 46), (46, 1));
         assert_eq!(image_geometry(&image(1, 8192), 10), (10, MAX_IMAGE_ROWS));
+    }
+
+    #[test]
+    fn hiding_the_library_removes_the_feeds_pane() {
+        let mut app = test_app();
+        app.categories = vec![category(1, "Library Category")];
+        app.feeds = vec![feed(7, "Sidebar Feed", 1)];
+        app.selection = Selection::Unread;
+        app.entries = vec![starred_entry()];
+        app.entry_cursor = 0;
+        app.entry_state.select(Some(0));
+        app.ensure_article();
+        app.focus = Focus::Entries;
+
+        let text = render_text(&mut app, 120, 24);
+        assert!(text.contains("Library Category"), "{text:?}");
+        assert!(text.contains("Sidebar Feed"), "{text:?}");
+
+        app.show_library = false;
+        let text = render_text(&mut app, 120, 24);
+        assert!(!text.contains("Library Category"), "{text:?}");
+        assert!(!text.contains("Sidebar Feed"), "{text:?}");
+        assert!(text.contains("Starred entry"), "{text:?}");
     }
 
     #[test]

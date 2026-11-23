@@ -135,6 +135,7 @@ make it stick.
 | `j` / `k` or `↓` / `↑` | Move in the focused pane, or scroll the reader |
 | `h` / `l` or `←` / `→` | Focus the pane left / right (and open the entry) |
 | `Tab` / `Shift-Tab` | Cycle panes |
+| `L` | Show / hide the library (feeds and categories) pane |
 | `1` / `2` / `3` | Focus feeds / entries / reader |
 | `g` / `G` | Jump to top / bottom |
 | `n` | Subscribe by website URL (feeds are detected automatically) |
