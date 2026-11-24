@@ -555,6 +555,7 @@ pub struct App {
     pub entry_state: ListState,
     pub entry_page: usize,
     pub total_entries: Option<i64>,
+    reset_entry_cursor_on_load: bool,
 
     pub search: String,
     pub feed_filter: String,
@@ -622,6 +623,7 @@ impl App {
             entry_state: ListState::default(),
             entry_page: 10,
             total_entries: None,
+            reset_entry_cursor_on_load: false,
             search: String::new(),
             feed_filter: String::new(),
             focus: Focus::Feeds,
@@ -2207,6 +2209,9 @@ impl App {
 
     fn refresh(&mut self) {
         self.loading = true;
+        if self.focus == Focus::Entries {
+            self.reset_entry_cursor_on_load = true;
+        }
         self.set_status(StatusKind::Info, "Refreshing feeds…");
         self.send(ApiCommand::Refresh);
     }
@@ -2297,12 +2302,17 @@ impl App {
                 self.loading = false;
                 self.entries = entries;
                 self.total_entries = Some(total);
+                let reset_cursor =
+                    std::mem::take(&mut self.reset_entry_cursor_on_load);
                 if self.entries.is_empty() {
                     self.entry_cursor = 0;
                     self.entry_state.select(None);
                 } else {
-                    self.entry_cursor =
-                        self.entry_cursor.min(self.entries.len() - 1);
+                    self.entry_cursor = if reset_cursor {
+                        0
+                    } else {
+                        self.entry_cursor.min(self.entries.len() - 1)
+                    };
                     self.entry_state.select(Some(self.entry_cursor));
                 }
                 self.article_scroll = 0;
@@ -2481,6 +2491,7 @@ impl App {
             }
             ApiEvent::Error { context, message } => {
                 self.loading = false;
+                self.reset_entry_cursor_on_load = false;
                 self.set_status(
                     StatusKind::Error,
                     format!("{context}: {message}"),
@@ -2941,6 +2952,55 @@ mod tests {
         assert_eq!(app.selection, Selection::Feed(FeedID(9)));
         assert_eq!(app.focus, Focus::Feeds);
         let _ = rx.try_recv(); // LoadEntries from the reload
+    }
+
+    #[test]
+    fn refreshing_from_the_entries_pane_moves_the_cursor_to_the_top() {
+        let (mut app, _rx) = test_app();
+        let reloaded = || {
+            vec![
+                render_entry(1, "unread"),
+                render_entry(2, "unread"),
+                render_entry(3, "unread"),
+            ]
+        };
+        app.entries = reloaded();
+        app.entry_cursor = 2;
+        app.entry_state.select(Some(2));
+        app.focus = Focus::Entries;
+
+        press(&mut app, KeyCode::Char('r'));
+        let generation = app.generation;
+        app.handle_api(ApiEvent::Entries {
+            generation,
+            entries: reloaded(),
+            total: 3,
+        });
+
+        assert_eq!(app.entry_cursor, 0);
+        assert_eq!(app.entry_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn refreshing_outside_the_entries_pane_keeps_the_cursor() {
+        let (mut app, _rx) = test_app();
+        let reloaded = || {
+            vec![render_entry(1, "unread"), render_entry(2, "unread")]
+        };
+        app.entries = reloaded();
+        app.entry_cursor = 1;
+        app.entry_state.select(Some(1));
+        app.focus = Focus::Article;
+
+        press(&mut app, KeyCode::Char('r'));
+        let generation = app.generation;
+        app.handle_api(ApiEvent::Entries {
+            generation,
+            entries: reloaded(),
+            total: 2,
+        });
+
+        assert_eq!(app.entry_cursor, 1);
     }
 
     #[test]
