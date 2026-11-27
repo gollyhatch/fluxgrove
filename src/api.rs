@@ -25,14 +25,6 @@ const MAX_IMAGE_DIMENSION: u32 = 8192;
 /// Upper bound for decoder allocations.
 const MAX_IMAGE_ALLOC: u64 = 64 * 1024 * 1024;
 
-/// A decoded image ready to be drawn in the reader.
-#[derive(Debug, Clone)]
-pub struct DecodedImage {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
-
 #[derive(Debug)]
 pub struct BootstrapData {
     pub feeds: Vec<Feed>,
@@ -158,7 +150,7 @@ pub enum ApiEvent {
     MarkedAllRead,
     ImageLoaded {
         url: String,
-        result: Result<DecodedImage, String>,
+        result: Result<image::DynamicImage, String>,
     },
     Error {
         context: String,
@@ -204,7 +196,7 @@ impl ApiClient {
     }
 
     /// Fetch and decode an image embedded in an article.
-    async fn load_image(&self, url: &str) -> Result<DecodedImage> {
+    async fn load_image(&self, url: &str) -> Result<image::DynamicImage> {
         let response = self
             .http
             .get(url)
@@ -226,7 +218,7 @@ impl ApiClient {
         if bytes.len() as u64 > MAX_IMAGE_BYTES {
             anyhow::bail!("image is larger than {MAX_IMAGE_BYTES} bytes");
         }
-        let rgba = tokio::task::spawn_blocking(move || {
+        let image = tokio::task::spawn_blocking(move || {
             let mut reader =
                 image::ImageReader::new(std::io::Cursor::new(bytes))
                     .with_guessed_format()?;
@@ -235,16 +227,12 @@ impl ApiClient {
             limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
             limits.max_alloc = Some(MAX_IMAGE_ALLOC);
             reader.limits(limits);
-            reader.decode().map(|image| image.to_rgba8())
+            reader.decode()
         })
         .await
         .context("the image decoding task failed")?
         .context("could not decode the image")?;
-        Ok(DecodedImage {
-            width: rgba.width(),
-            height: rgba.height(),
-            rgba: rgba.into_raw(),
-        })
+        Ok(image)
     }
 
     /// Update a feed with the full set of options Miniflux accepts.
@@ -1059,9 +1047,12 @@ mod tests {
             } => {
                 assert_eq!(loaded, url);
                 let image = result.expect("decoded image");
-                assert_eq!((image.width, image.height), (2, 1));
-                assert_eq!(image.rgba.len(), 8);
-                assert_eq!(&image.rgba[0..4], &[10, 20, 30, 255]);
+                assert_eq!((image.width(), image.height()), (2, 1));
+                let rgba = image.to_rgba8();
+                assert_eq!(
+                    rgba.as_raw(),
+                    &[10, 20, 30, 255, 10, 20, 30, 255]
+                );
             }
             other => panic!("unexpected event: {other:?}"),
         }

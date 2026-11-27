@@ -8,7 +8,12 @@ use miniflux_api::models::{
     FeedID, Subscription, UserID,
 };
 use opaline::Theme;
-use ratatui::widgets::ListState;
+use ratatui::{layout::Size, widgets::ListState};
+use ratatui_image::{
+    FilterType, Resize,
+    picker::Picker,
+    sliced::SlicedProtocol,
+};
 use tokio::sync::mpsc::UnboundedSender;
 use url::Url;
 
@@ -517,11 +522,59 @@ pub enum StatusKind {
     Error,
 }
 
+/// A decoded reader image and its protocol for the current render size.
+pub struct ImageData {
+    image: image::DynamicImage,
+    protocol: Option<(Size, SlicedProtocol)>,
+}
+
+impl ImageData {
+    pub fn new(image: image::DynamicImage) -> Self {
+        Self {
+            image,
+            protocol: None,
+        }
+    }
+
+    /// Encode the image for `size`, reusing the cached protocol when possible.
+    /// Returns the image's actual cell size.
+    pub fn protocol_for(
+        &mut self,
+        picker: &Picker,
+        size: Size,
+    ) -> Option<Size> {
+        if let Some((cached_size, protocol)) = &self.protocol
+            && *cached_size == size
+        {
+            return Some(protocol.size());
+        }
+
+        let protocol = match SlicedProtocol::new_with_resize(
+            picker,
+            self.image.clone(),
+            size,
+            Resize::Scale(Some(FilterType::Lanczos3)),
+        ) {
+            Ok(protocol) => protocol,
+            Err(_) => {
+                self.protocol = None;
+                return None;
+            }
+        };
+        let image_size = protocol.size();
+        self.protocol = Some((size, protocol));
+        Some(image_size)
+    }
+
+    pub fn protocol(&self) -> Option<&SlicedProtocol> {
+        self.protocol.as_ref().map(|(_, protocol)| protocol)
+    }
+}
+
 /// Load state of an image embedded in the reader.
-#[derive(Debug)]
 pub enum LoadedImage {
     Loading,
-    Ready(api::DecodedImage),
+    Ready(ImageData),
     Failed,
 }
 
@@ -539,6 +592,7 @@ pub struct App {
     pub theme: Theme,
     pub theme_id: String,
     pub theme_choices: Vec<(String, String)>,
+    pub picker: Picker,
 
     pub feeds: Vec<Feed>,
     pub categories: Vec<Category>,
@@ -591,6 +645,7 @@ impl App {
         config: Config,
         theme: Theme,
         theme_id: String,
+        picker: Picker,
         api_tx: UnboundedSender<ApiCommand>,
     ) -> Self {
         let mut theme_choices: Vec<(String, String)> =
@@ -610,6 +665,7 @@ impl App {
             theme,
             theme_id,
             theme_choices,
+            picker,
             feeds: Vec::new(),
             categories: Vec::new(),
             counters: FeedCounters::default(),
@@ -2483,7 +2539,7 @@ impl App {
             ApiEvent::ImageLoaded { url, result } => {
                 if self.images.contains_key(&url) {
                     let state = match result {
-                        Ok(image) => LoadedImage::Ready(image),
+                        Ok(image) => LoadedImage::Ready(ImageData::new(image)),
                         Err(_) => LoadedImage::Failed,
                     };
                     self.images.insert(url, state);
@@ -2719,7 +2775,13 @@ mod tests {
         let theme = opaline::builtins::load_by_name("catppuccin-mocha")
             .expect("builtin theme");
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let app = App::new(config, theme, "catppuccin-mocha".to_string(), tx);
+        let app = App::new(
+            config,
+            theme,
+            "catppuccin-mocha".to_string(),
+            Picker::halfblocks(),
+            tx,
+        );
         (app, rx)
     }
 
@@ -4216,16 +4278,18 @@ mod tests {
 
         app.handle_api(ApiEvent::ImageLoaded {
             url: url.clone(),
-            result: Ok(api::DecodedImage {
-                width: 1,
-                height: 1,
-                rgba: vec![255, 0, 0, 255],
-            }),
+            result: Ok(image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_pixel(
+                    1,
+                    1,
+                    image::Rgba([255, 0, 0, 255]),
+                ),
+            )),
         });
 
         assert!(matches!(
             app.images.get(&url),
-            Some(LoadedImage::Ready(image)) if image.width == 1
+            Some(LoadedImage::Ready(_))
         ));
     }
 

@@ -26,9 +26,10 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
   `Ctrl-f`/`Ctrl-b`.
 - Entry list shows the article title plus feed / age / reading time.
 - Long titles wrap to the available width instead of being clipped.
-- Embedded article images in the reading view, drawn with block graphics and
-  scaled to the pane width, toggled with `i` (off by default; set
-  `images = true` to start enabled).
+- Embedded article images in the reading view, drawn with the terminal's
+  graphics protocol (sixel, kitty or iTerm2) when available and Unicode
+  half-blocks otherwise. Scaled to the pane width and toggled with `i` (off by
+  default; set `images = true` to start enabled).
 - Save articles to a configured Miniflux integration with `S`.
 - Fetch and display the original article content with `F`.
 - Hide feeds with no unread items, or read articles, with `f` depending on the
@@ -212,6 +213,9 @@ The feed editor, the search prompt and the subscribe prompt share these keys:
   engine and all built-in themes. Semantic tokens such as `bg.panel`,
   `text.muted` and `accent.primary` are used throughout rather than hard-coded
   colors.
+- [`ratatui-image`](https://crates.io/crates/ratatui-image) renders article
+  images over sixel, kitty, iTerm2, or Unicode half-blocks as the terminal
+  supports.
 - [`miniflux_api`](https://crates.io/crates/miniflux_api) talks to the Miniflux
   REST API from a single background worker, so the UI never blocks on HTTP.
 - Article HTML is converted to text by `html2text` and re-wrapped to the reader

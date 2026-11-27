@@ -54,7 +54,9 @@ async fn main() -> Result<()> {
     };
 
     let (api_tx, api_rx) = api::spawn(client);
-    let mut app = App::new(config, theme, theme_id, api_tx);
+    let picker = ratatui_image::picker::Picker::from_query_stdio()
+        .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
+    let mut app = App::new(config, theme, theme_id, picker, api_tx);
     if let Some(warning) = warning {
         app.set_startup_warning(warning);
     }

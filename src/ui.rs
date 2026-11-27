@@ -5,14 +5,14 @@ use opaline::{
 };
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect, Size},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
+use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use crate::{
-    api,
     app::{
         App, FeedField, FeedForm, Focus, LoadedImage, Mode, SearchScope,
         SidebarRow, StatusKind, TextInput,
@@ -631,20 +631,40 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
                         )));
                         continue;
                     }
-                    match app.images.get(url) {
-                        Some(LoadedImage::Ready(image)) => {
-                            let (width, rows) =
-                                image_geometry(image, inner_width);
-                            lines.extend(
-                                std::iter::repeat_with(|| Line::from(""))
-                                    .take(rows),
-                            );
-                            images.push(ImagePlacement {
-                                url: url.clone(),
-                                start,
-                                width,
-                                rows,
-                            });
+                    let target = Size::new(
+                        u16::try_from(inner_width).unwrap_or(u16::MAX),
+                        MAX_IMAGE_ROWS.min(u16::MAX as usize) as u16,
+                    );
+                    match app.images.get_mut(url) {
+                        Some(LoadedImage::Ready(image_data)) => {
+                            let size =
+                                image_data.protocol_for(&app.picker, target);
+                            match size {
+                                Some(size) => {
+                                    let rows = size.height as usize;
+                                    lines.extend(
+                                        std::iter::repeat_with(|| {
+                                            Line::from("")
+                                        })
+                                        .take(rows),
+                                    );
+                                    images.push(ImagePlacement {
+                                        url: url.clone(),
+                                        start,
+                                    });
+                                }
+                                None => {
+                                    lines.push(Line::from(Span::styled(
+                                        util::truncate(
+                                            &format!(
+                                                "[image unavailable] {label}"
+                                            ),
+                                            inner_width,
+                                        ),
+                                        pal.dim(),
+                                    )));
+                                }
+                            }
                         }
                         Some(LoadedImage::Loading) => {
                             lines.push(Line::from(Span::styled(
@@ -702,13 +722,23 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
 
     if !content.is_empty() {
         for placement in &images {
-            if let Some(LoadedImage::Ready(image)) =
-                app.images.get(&placement.url)
-            {
-                render_article_image(
-                    frame, image, placement, scroll, content, pal,
-                );
-            }
+            let Some(LoadedImage::Ready(image_data)) =
+                app.images.get_mut(&placement.url)
+            else {
+                continue;
+            };
+            let Some(protocol) = image_data.protocol() else {
+                continue;
+            };
+            let offset = placement.start as isize - scroll as isize;
+            let Ok(y) = i16::try_from(offset) else {
+                continue;
+            };
+            let position = SignedPosition { x: 0, y };
+            frame.render_widget(
+                SlicedImage::new(protocol, position),
+                content,
+            );
         }
     }
 }
@@ -717,110 +747,10 @@ fn draw_article(frame: &mut Frame, app: &mut App, area: Rect, pal: &Palette) {
 struct ImagePlacement {
     url: String,
     start: usize,
-    width: usize,
-    rows: usize,
 }
 
 /// Guard against pathological images filling the line list.
 const MAX_IMAGE_ROWS: usize = 4096;
-
-/// Scale an image to the full reader width, keeping its aspect ratio.
-fn image_geometry(
-    image: &api::DecodedImage,
-    max_width: usize,
-) -> (usize, usize) {
-    let max_width = max_width.max(1);
-    let src_w = image.width.max(1) as f64;
-    let src_h = image.height.max(1) as f64;
-    // Two source pixels per cell row: terminal cells are about twice as tall
-    // as they are wide.
-    let rows = (max_width as f64 * src_h / src_w / 2.0).ceil();
-    let width = max_width;
-    let rows = (rows.round() as usize).clamp(1, MAX_IMAGE_ROWS);
-    (width, rows)
-}
-
-fn render_article_image(
-    frame: &mut Frame,
-    image: &api::DecodedImage,
-    placement: &ImagePlacement,
-    scroll: u16,
-    content: Rect,
-    pal: &Palette,
-) {
-    let inner_height = content.height as usize;
-    let offset = placement.start as isize - scroll as isize;
-    let first = offset.max(0) as usize;
-    let last = (offset + placement.rows as isize)
-        .clamp(0, inner_height as isize) as usize;
-    if last <= first {
-        return;
-    }
-
-    let background = pal.color(tokens::BG_PANEL);
-    let buffer = frame.buffer_mut();
-    for screen_row in first..last {
-        let image_row = (screen_row as isize - offset) as usize;
-        let y = content.y + screen_row as u16;
-        for x in 0..placement.width {
-            let top = blend_pixel(
-                sample_image(image, placement, x, image_row * 2),
-                background,
-            );
-            let bottom = blend_pixel(
-                sample_image(image, placement, x, image_row * 2 + 1),
-                background,
-            );
-            if let Some(cell) =
-                buffer.cell_mut((content.x + x as u16, y))
-            {
-                cell.set_symbol("▀");
-                cell.set_fg(top);
-                cell.set_bg(bottom);
-            }
-        }
-    }
-}
-
-/// Nearest-neighbour sample of the source image at a destination pixel.
-fn sample_image(
-    image: &api::DecodedImage,
-    placement: &ImagePlacement,
-    x: usize,
-    y: usize,
-) -> [u8; 4] {
-    let src_w = image.width.max(1) as u64;
-    let src_h = image.height.max(1) as u64;
-    let dst_w = placement.width.max(1) as u64;
-    let dst_h = (placement.rows * 2).max(1) as u64;
-    let sx = (x as u64 * src_w / dst_w).min(src_w - 1);
-    let sy = (y as u64 * src_h / dst_h).min(src_h - 1);
-    let index = ((sy * src_w + sx) * 4) as usize;
-    image
-        .rgba
-        .get(index..index + 4)
-        .map_or([0, 0, 0, 0], |pixel| {
-            [pixel[0], pixel[1], pixel[2], pixel[3]]
-        })
-}
-
-/// Blend a pixel over the panel background when it is translucent.
-fn blend_pixel(pixel: [u8; 4], background: Color) -> Color {
-    let [red, green, blue, alpha] = pixel;
-    if alpha == 255 {
-        return Color::Rgb(red, green, blue);
-    }
-    let (bg_red, bg_green, bg_blue) = match background {
-        Color::Rgb(red, green, blue) => (red, green, blue),
-        _ => (0, 0, 0),
-    };
-    let alpha = u16::from(alpha);
-    let mix = |foreground: u8, backdrop: u8| {
-        ((u16::from(foreground) * alpha + u16::from(backdrop) * (255 - alpha))
-            / 255) as u8
-    };
-    Color::Rgb(mix(red, bg_red), mix(green, bg_green), mix(blue, bg_blue))
-}
 
 /// Fit a pane title next to its right-hand label.
 fn fitted_title(title: &str, right: Option<&str>, width: u16) -> String {
@@ -1809,7 +1739,13 @@ mod tests {
         let theme = opaline::builtins::load_by_name("catppuccin-mocha")
             .expect("builtin theme");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        App::new(config, theme, "catppuccin-mocha".to_string(), tx)
+        App::new(
+            config,
+            theme,
+            "catppuccin-mocha".to_string(),
+            ratatui_image::picker::Picker::halfblocks(),
+            tx,
+        )
     }
 
     fn render_at(app: &mut App, width: u16, height: u16) {
@@ -2215,13 +2151,19 @@ mod tests {
         assert!(text.contains("[image] Pic"), "{text:?}");
 
         app.show_images = true;
+        let mut image = image::RgbaImage::new(2, 2);
+        for (_x, y, pixel) in image.enumerate_pixels_mut() {
+            *pixel = if y == 0 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 255, 255])
+            };
+        }
         app.images.insert(
             "https://example.com/pic.png".to_string(),
-            LoadedImage::Ready(api::DecodedImage {
-                width: 4,
-                height: 4,
-                rgba: [255, 0, 0, 255].repeat(16),
-            }),
+            LoadedImage::Ready(crate::app::ImageData::new(
+                image::DynamicImage::ImageRgba8(image),
+            )),
         );
         let text = render_text(&mut app, 80, 24);
         assert!(text.contains("▀"), "the image was not drawn: {text:?}");
@@ -2276,20 +2218,6 @@ mod tests {
             .find(|line| line.contains("Feed X"))
             .expect("meta line");
         assert!(!meta_line.contains('★'), "{meta_line:?}");
-    }
-
-    #[test]
-    fn images_fill_the_reading_width() {
-        let image = |width, height| api::DecodedImage {
-            width,
-            height,
-            rgba: vec![255; 0],
-        };
-
-        assert_eq!(image_geometry(&image(300, 600), 80), (80, 80));
-        assert_eq!(image_geometry(&image(4, 4), 80), (80, 40));
-        assert_eq!(image_geometry(&image(1000, 10), 46), (46, 1));
-        assert_eq!(image_geometry(&image(1, 8192), 10), (10, MAX_IMAGE_ROWS));
     }
 
     #[test]
