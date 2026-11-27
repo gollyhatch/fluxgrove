@@ -18,6 +18,11 @@ Feed discovery when subscribing with `n` — choose one when several feeds are f
 
 ![fluxgrove feed discovery picker](screenshots/feed-discovery.png)
 
+Embedded article images use the terminal's graphics protocol (Kitty here), with
+Unicode half-blocks as the fallback:
+
+![fluxgrove reader showing an embedded article image](screenshots/images.png)
+
 ## Features
 
 - Three-pane feed / entry / reader layout that adapts to narrow terminals.
